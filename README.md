@@ -1,5 +1,7 @@
 # SHES-Control
 
+Sistema de control de ventas de SHES.
+
 Aplicación comercial de escritorio: Python 3.12 + PySide6. La preventa procesada es
 preliminar; no cierra premios ni números finales sin futuras liquidaciones.
 
