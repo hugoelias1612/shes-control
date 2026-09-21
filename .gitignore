@@ -179,3 +179,20 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Datos comerciales privados y resultados de cargas
+datos/
+SHES-Control-Datos/
+HISTORIAL/
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.sqlite
+*.sqlite3
+*.db
+revision_preventa.json
+preventa_procesada.json
+carga_incompleta.json
+*.tmp
+~$*
