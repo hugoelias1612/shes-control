@@ -196,3 +196,14 @@ preventa_procesada.json
 carga_incompleta.json
 *.tmp
 ~$*
+
+# Índice y snapshots semanales privados
+*.sqlite3-*
+*.sqlite-*
+*.db-*
+revision_*.json
+procesado_*.json
+cierre_*.json
+202*-W*.json
+semanas/
+DATOS/

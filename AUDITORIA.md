@@ -77,3 +77,17 @@ Se mantuvieron Python/PySide6 y el flujo carga → revisión → confirmación �
 Al iniciar solo estaban versionados `.gitignore` y `.gitattributes`; los módulos
 y requirements estaban sin seguimiento. Se editaron localmente, sin commit ni
 publicación. No se encontraron Excel/JSON comerciales versionados en el checkout.
+
+## Evolución semanal — 22/09/2026
+
+El flujo principal pasó a semanas comerciales lunes–domingo. Se agregó índice SQLite
+externo, carga masiva revisable, hashes/versiones activas, estados por sucursal,
+métricas semanales parciales, revisión reutilizada y cierre/reapertura con snapshots.
+La ventana diaria anterior se trasladó sin eliminar su lógica ni sus tests.
+
+Validación de esta evolución: 66 tests (22 existentes + 44 semanales), compilación,
+dependencias y carga temporal de los cuatro Excel reales con hashes originales intactos.
+La UI semanal fue renderizada en modo offscreen para revisar navegación y checklist.
+La nueva base de producción se inicializa al ejecutar la app; las pruebas usaron
+carpetas temporales. Diseño, fórmulas, esquema, compatibilidad, límites y pasos
+manuales se documentan en `SEMANAS.md`.

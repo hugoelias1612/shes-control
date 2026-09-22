@@ -14,10 +14,36 @@ py -3.12 -m venv .venv
 ```
 
 Las dependencias están fijadas a las versiones del entorno local verificado.
-SQLAlchemy queda disponible para futura persistencia; todavía no se implementan
-base de datos ni sincronización.
+SQLite guarda el índice semanal fuera del repo, usando `sqlite3` de Python.
+SQLAlchemy sigue instalado para una futura migración; todavía no hay sincronización.
 
-## Reglas de esta versión
+## Flujo principal semanal
+
+Al ejecutar `main.py` se abre el selector de semanas, sin pedir archivos. Elegir
+una semana abre el centro con Resumen, Cargas, Vendedores, Artículos, Proveedores,
+Liquidaciones, Premios y Archivos/Auditoría.
+
+- Semana comercial de lunes a domingo, determinada por **fecha de alta** del pedido.
+- Subida múltiple con vista previa y selección obligatoria de sucursal para Puntos.
+- Duplicados SHA-256 ignorados; nuevas versiones conservadas y una sola activa.
+- Pedidos/PorCliente acumulativos reemplazan al anterior, nunca se suman entre archivos.
+- PorCliente conserva fechas por fila: indicar si son comerciales o de entrega y
+  confirmar el rango comercial exportado. La fecha de entrega no cambia de semana un pedido.
+- No trabajado por sucursal con motivo opcional y reversión. Domingo nunca pide SIGO.
+- Análisis parcial disponible sin liquidaciones ni cierre. Rangos de ventas,
+  artículos y preventa documental completa se muestran separadamente.
+- Revisión semanal reutiliza las tarjetas y reasignaciones anteriores.
+- Cierre exige semana finalizada, preventa completa, revisión actual confirmada y
+  liquidaciones confirmadas por jornada. Reapertura auditada conserva cada cierre.
+- Liquidaciones se adjuntan y cuentan; su estructura financiera y los premios aún
+  no se interpretan/calculan. Un cierre administrativo no inventa números netos finales.
+
+Diseño, esquema SQLite, fórmulas, límites y guía manual en [SEMANAS.md](SEMANAS.md).
+
+## Reglas del flujo diario compatible
+
+El flujo diario anterior permanece en `app/daily_window.py`; los módulos y JSON
+anteriores mantienen su contrato. Las siguientes reglas describen ese flujo.
 
 - Se requieren cuatro archivos `.xlsx`, identificados por columnas. Las tarjetas
   distinguen Corrientes/Resistencia: no hay columna geográfica inequívoca definida.
@@ -63,7 +89,10 @@ un registro inmutable de cada edición humana ni una base multiusuario.
 - `review_data.py`: modelos, consolidación y revisión auditable.
 - `processor.py`: métricas comerciales separadas de actividad SIGO.
 - `history.py` y `storage.py`: copias versionadas y escritura JSON atómica.
-- `main.py`, `review_window.py`, `dashboard_window.py`: escritorio.
+- `main.py`: entrada semanal; `daily_window.py` conserva la ventana diaria anterior.
+- `week_calendar.py`, `week_imports.py`, `week_store.py`, `week_service.py` y
+  `week_window.py`: calendario, detección, persistencia, reglas y UI semanales.
+- `review_window.py`, `dashboard_window.py`: pantallas compartidas.
 
 El paquete carga pandas antes de PySide6 incluso al importar una ventana directamente,
 por la incompatibilidad observada con Shiboken/dateutil/six.

@@ -783,6 +783,11 @@ class DashboardWindow(QMainWindow):
             "Números preliminares hasta "
             "cargar liquidaciones"
         )
+        if data.get("week_id"):
+            subtitle.setText(
+                f"Semana {data['week_id']} · {data['status']} · Datos hasta: {data.get('data_until') or 'sin pedidos'}"
+                " · Preventa: importes finales y premios aún no calculados"
+            )
 
         subtitle.setStyleSheet(
             """

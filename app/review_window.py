@@ -117,8 +117,8 @@ class ArticlesWidget(QFrame):
         if not order.articles:
 
             label = QLabel(
-                "No se encontraron artículos "
-                "para este cliente en PorCliente."
+                "No hay artículos atribuidos a este pedido. "
+                "Consultá las alertas de conciliación."
             )
 
             label.setStyleSheet(
@@ -1011,10 +1011,14 @@ class ReviewWindow(QMainWindow):
     def __init__(
         self,
         session: "ReviewSession",
+        save_callback=None,
+        process_callback=None,
     ):
         super().__init__()
 
         self.session = session
+        self.save_callback = save_callback or save_review
+        self.process_callback = process_callback or process_presale_data
         self.review_confirmed = False
         self.dashboard_window = None
 
@@ -1385,7 +1389,7 @@ class ReviewWindow(QMainWindow):
             return
 
         try:
-            path = save_review(self.session)
+            path = self.save_callback(self.session)
         except Exception as error:
             QMessageBox.critical(self, "Error guardando revisión", str(error))
             return
@@ -1430,7 +1434,7 @@ class ReviewWindow(QMainWindow):
             return
 
         try:
-            data = process_presale_data(
+            data = self.process_callback(
                 self.session
             )
 
