@@ -589,6 +589,7 @@ def build_logical_orders(
     orders_df: pd.DataFrame,
     article_map: dict,
     preventa_date,
+    date_column="FECHA/HORA DE ALTA",
 ) -> list[LogicalOrder]:
 
     target = parse_date_series(pd.Series([preventa_date])).iloc[0]
@@ -622,7 +623,7 @@ def build_logical_orders(
         )
 
         alta_raw = row.get(
-            "FECHA/HORA DE ALTA",
+            date_column,
             "",
         )
 

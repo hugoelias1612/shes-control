@@ -77,6 +77,24 @@ class WeekStore:
         self.db_path = self.root / "shes_index.sqlite3"
         with self.connect() as db:
             db.executescript(SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
+            if "removed_at" not in {row["name"] for row in db.execute("PRAGMA table_info(uploads)")}:
+                db.execute("ALTER TABLE uploads ADD COLUMN removed_at TEXT")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(2)")
+            db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS settings_history(timestamp TEXT NOT NULL, details TEXT NOT NULL)")
+            db.execute("INSERT OR IGNORE INTO settings VALUES('excluded_sellers', ?)",
+                       (json.dumps(["HUGO", "ROLON BRAIAN", "OJEDA DIEGO"]),))
+
+    def default_exclusions(self):
+        return set(json.loads(self.query("SELECT value FROM settings WHERE key='excluded_sellers'")[0]["value"]))
+
+    def set_default_exclusions(self, names):
+        with self.connect() as db:
+            db.execute("UPDATE settings SET value=? WHERE key='excluded_sellers'", (json.dumps(sorted(set(names))),))
+            db.execute("INSERT INTO settings_history VALUES(?,?)", (timestamp(), json.dumps(sorted(set(names)))))
+            for week in db.execute("SELECT id FROM weeks WHERE status!='CERRADA' AND NOT EXISTS (SELECT 1 FROM reviews WHERE week_id=weeks.id)").fetchall():
+                self.changed(db, week["id"])
 
     @contextmanager
     def connect(self):
@@ -138,8 +156,9 @@ class WeekStore:
         return self.query("SELECT * FROM uploads WHERE week_id=?" +
                           (" AND active=1" if active else "") + " ORDER BY id", (key,))
 
-    def duplicate(self, digest):
-        rows = self.query("SELECT * FROM uploads WHERE hash=? LIMIT 1", (digest,))
+    def duplicate(self, digest, key=None):
+        rows = self.query("SELECT * FROM uploads WHERE hash=? AND active=1 AND removed_at IS NULL" +
+                          (" AND week_id=?" if key else "") + " LIMIT 1", (digest, key) if key else (digest,))
         return rows[0] if rows else None
 
     def workdays(self, key):
@@ -172,10 +191,12 @@ class WeekStore:
                 digest = file_hash(candidate.path)
                 if digest != candidate.hash:
                     raise ValueError("El archivo cambió después de la revisión previa")
-                duplicate = db.execute("SELECT id FROM uploads WHERE hash=?", (digest,)).fetchone()
+                duplicate = db.execute("SELECT id, original_filename FROM uploads WHERE hash=? AND week_id=? AND active=1 AND removed_at IS NULL",
+                                       (digest, key)).fetchone()
                 if duplicate:
                     self.audit(db, key, "duplicado_rechazado", {"hash": digest, "upload_id": duplicate["id"]})
-                    results.append({"status": "DUPLICADO", "name": candidate.path.name})
+                    results.append({"status": "DUPLICADO", "name": candidate.path.name,
+                                    "detail": f"Ya está activo como carga #{duplicate['id']}: {duplicate['original_filename']}"})
                     continue
                 candidate.validate(week)
                 logical_key = candidate.logical_key
@@ -183,7 +204,7 @@ class WeekStore:
                                    (key, logical_key)).fetchone()
                 version = db.execute("SELECT COALESCE(MAX(version),0)+1 FROM uploads WHERE week_id=? AND logical_key=?",
                                      (key, logical_key)).fetchone()[0]
-                active = not prior or (candidate.coverage_start <= prior["coverage_start"] and
+                active = candidate.kind in {"porcliente", "puntos"} or not prior or (candidate.coverage_start <= prior["coverage_start"] and
                                        candidate.coverage_end >= prior["coverage_end"])
                 destination = self.folder(key) / candidate.kind / f"v{version}_{uuid4().hex}.xlsx"
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,6 +215,8 @@ class WeekStore:
                     raise ValueError("No coincide el hash de la copia guardada")
                 if active:
                     db.execute("UPDATE uploads SET active=0 WHERE week_id=? AND logical_key=?", (key, logical_key))
+                    if candidate.kind == "puntos":
+                        db.execute("UPDATE uploads SET active=0 WHERE week_id=? AND type='puntos' AND branch=?", (key, candidate.branch))
                 cursor = db.execute("""INSERT INTO uploads(week_id,type,logical_key,file_path,original_filename,hash,
                     detected_start_date,detected_end_date,coverage_start,coverage_end,branch,version,active,metadata,uploaded_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -209,6 +232,27 @@ class WeekStore:
                                 "id": cursor.lastrowid, "version": version, "name": candidate.path.name})
         return results
 
+    def remove_uploads(self, key, upload_ids, expected_revision=None):
+        ids = list(dict.fromkeys(upload_ids))
+        if not ids:
+            raise ValueError("Seleccioná al menos una carga")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.assert_open(db, key, expected_revision)
+            rows = []
+            for upload_id in ids:
+                row = db.execute("SELECT * FROM uploads WHERE id=? AND week_id=? AND removed_at IS NULL",
+                                 (upload_id, key)).fetchone()
+                if row is None:
+                    raise ValueError("Una carga ya fue eliminada o no pertenece a esta semana. Actualizá la pantalla")
+                rows.append(row)
+            removed_at = timestamp()
+            for row in rows:
+                db.execute("UPDATE uploads SET active=0, removed_at=? WHERE id=?", (removed_at, row["id"]))
+                self.audit(db, key, "eliminar_carga", {"id": row["id"], "nombre": row["original_filename"],
+                           "era_activa": bool(row["active"]), "archivo_conservado": row["file_path"]})
+            self.changed(db, key)
+
     def activate(self, key, upload_id):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -216,9 +260,13 @@ class WeekStore:
             row = db.execute("SELECT * FROM uploads WHERE id=? AND week_id=?", (upload_id, key)).fetchone()
             if not row:
                 raise ValueError("Archivo inexistente")
+            if row["removed_at"]:
+                raise ValueError("Esta carga fue eliminada. Podés subir el Excel nuevamente")
             if file_hash(row["file_path"]) != row["hash"]:
                 raise ValueError("El archivo guardado fue modificado fuera de la aplicación")
             db.execute("UPDATE uploads SET active=0 WHERE week_id=? AND logical_key=?", (key, row["logical_key"]))
+            if row["type"] == "puntos":
+                db.execute("UPDATE uploads SET active=0 WHERE week_id=? AND type='puntos' AND branch=?", (key, row["branch"]))
             db.execute("UPDATE uploads SET active=1 WHERE id=?", (upload_id,))
             self.audit(db, key, "cambio_activa", {"id": upload_id, "explicit": True})
             self.changed(db, key)

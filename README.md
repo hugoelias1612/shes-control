@@ -23,12 +23,15 @@ Al ejecutar `main.py` se abre el selector de semanas, sin pedir archivos. Elegir
 una semana abre el centro con Resumen, Cargas, Vendedores, Artículos, Proveedores,
 Liquidaciones, Premios y Archivos/Auditoría.
 
-- Semana comercial de lunes a domingo, determinada por **fecha de alta** del pedido.
+- Semana de lunes a domingo, determinada por **FECHA ENTREGA** del pedido.
 - Subida múltiple con vista previa y selección obligatoria de sucursal para Puntos.
-- Duplicados SHA-256 ignorados; nuevas versiones conservadas y una sola activa.
-- Pedidos/PorCliente acumulativos reemplazan al anterior, nunca se suman entre archivos.
-- PorCliente conserva fechas por fila: indicar si son comerciales o de entrega y
-  confirmar el rango comercial exportado. La fecha de entrega no cambia de semana un pedido.
+- Un archivo idéntico ya activo en la misma semana se ignora y muestra la carga coincidente.
+- Pedidos admite varias partes de CHESS: se combinan por número; la última carga actualiza los repetidos.
+- PorCliente es un único reporte por semana: la última carga reemplaza al anterior y se cruza por cliente y fecha de entrega, usando el vendedor final del pedido. Negativos separados sin descontar preventa.
+- SIGO admite un semanal por sucursal y separa cada fecha: sábado anterior → lunes de reparto, lunes → martes, hasta viernes → sábado.
+- Exclusiones predeterminadas editables en la interfaz y guardadas en SQLite; las revisiones confirmadas conservan sus decisiones.
+- Se elige la semana, sin preguntar rangos comerciales. Eliminar una parte recalcula los pedidos restantes;
+  se conservan originales y auditoría, y se puede volver a cargar un archivo histórico o eliminado.
 - No trabajado por sucursal con motivo opcional y reversión. Domingo nunca pide SIGO.
 - Análisis parcial disponible sin liquidaciones ni cierre. Rangos de ventas,
   artículos y preventa documental completa se muestran separadamente.
@@ -39,6 +42,8 @@ Liquidaciones, Premios y Archivos/Auditoría.
   no se interpretan/calculan. Un cierre administrativo no inventa números netos finales.
 
 Diseño, esquema SQLite, fórmulas, límites y guía manual en [SEMANAS.md](SEMANAS.md).
+
+Guía del flujo actual y primera prueba: [PRIMERA_CARGA.md](PRIMERA_CARGA.md).
 
 ## Reglas del flujo diario compatible
 

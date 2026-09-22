@@ -1,5 +1,27 @@
 # Centro de control semanal
 
+El flujo actual se explica en [PRIMERA_CARGA.md](PRIMERA_CARGA.md): SIGO semanal por sucursal, preventa sábado anterior a viernes y reparto lunes a sábado. La configuración de exclusiones se guarda en `settings` y sus cambios en `settings_history`.
+
+
+## Eliminar cargas de prueba
+
+En la semana, abrir **Archivos / Auditoría**, seleccionar una o varias filas
+(Ctrl o Shift) y pulsar **Eliminar cargas seleccionadas**. La confirmación muestra
+los archivos afectados. Las cargas eliminadas dejan de aportar datos y la pantalla
+recalcula los resultados; no se activa automáticamente una versión anterior.
+Se puede activar manualmente una versión histórica que no esté eliminada.
+
+Los Excel originales y snapshots se conservan. Las filas quedan como ELIMINADA,
+con fecha y evento de auditoría, y los mismos archivos pueden subirse nuevamente.
+La revisión y las confirmaciones de liquidaciones deben confirmarse otra vez.
+Las semanas cerradas requieren reapertura antes de eliminar cargas.
+
+La migración automática a esquema 2 agrega `uploads.removed_at` sin modificar
+archivos ni eliminar registros existentes. La eliminación múltiple es atómica y
+verifica que la semana no haya cambiado desde que se abrió la lista.
+Validación actual: 79 tests, incluyendo migración, recarga del mismo Excel,
+cancelación, selección ordenada en UI, recálculo y bloqueo en semanas cerradas.
+
 ## Arquitectura y compatibilidad
 
 La aplicación arranca en `WeeksWindow`. Las semanas se generan desde el calendario
@@ -24,8 +46,8 @@ Nuevos módulos:
 Adaptaciones: `review_window.py` acepta callbacks opcionales para guardar/procesar
 la revisión semanal. Sus valores predeterminados preservan el flujo diario.
 `dashboard_window.py` adapta el subtítulo al contexto semanal. `main.py` queda como
-entrada pequeña. No se modificaron los contratos de `importers.py`, `review_data.py`
-ni `processor.py`.
+entrada pequeña. `build_logical_orders` acepta una columna de fecha opcional:
+el flujo diario conserva alta y el semanal usa entrega.
 
 Se utiliza `sqlite3` de la biblioteca estándar: transacciones explícitas y SQL
 acotado al repositorio de almacenamiento, sin una dependencia nueva. SQLAlchemy
@@ -59,14 +81,14 @@ Para backup, cerrar la aplicación y copiar **la carpeta de datos completa**, no
 la base. Esta versión guarda rutas absolutas: mover datos de equipo requiere una
 futura herramienta de relocalización. No compartir esta SQLite como solución multi-PC.
 
-## Esquema SQLite (versión 1)
+## Esquema SQLite (versión 2)
 
 | Tabla | Datos y restricciones principales |
 | --- | --- |
 | `schema_version` | Versión del esquema |
 | `weeks` | ID ISO, inicio único, fin, estado persistente, reapertura, revisión, timestamps |
 | `workdays` | Una fila por semana/fecha/sucursal, trabajó/no trabajó y motivo |
-| `uploads` | Tipo, clave lógica, ruta, nombre original, hash, rango detectado y comercial confirmado, sucursal, versión, activa, metadatos, timestamp |
+| `uploads` | Tipo, clave lógica, ruta, nombre original, hash, fechas detectadas y semana, sucursal, versión, activa, metadatos, timestamp, removed_at |
 | `liquidation_day_status` | Por jornada: confirmación, fecha/hora, cantidad al confirmar y nota |
 | `reviews` | Revisiones confirmadas, revisión de fuentes, JSON y ruta del snapshot |
 | `snapshots` | Cada procesamiento/cierre, revisión de fuentes, ruta, hash y timestamp |
@@ -74,7 +96,7 @@ futura herramienta de relocalización. No compartir esta SQLite como solución m
 | `legacy_loads` | Referencias a las cargas diarias anteriores, sin modificarlas |
 
 Índice único parcial: una sola versión activa por semana/clave lógica. Claves de
-Puntos: fecha+sucursal; Pedidos/PorCliente: una por tipo y semana. Las liquidaciones
+Puntos: sucursal (archivo semanal); Pedidos: una por hash y semana; PorCliente: una por semana. Las liquidaciones
 son adjuntos independientes. La cantidad cargada se consulta de los adjuntos activos,
 sin inventar cantidad esperada. Cambios de fuentes incrementan la revisión semanal;
 una revisión humana obsoleta no puede confirmar sobre datos nuevos.
@@ -89,30 +111,30 @@ semana pasada esté cerrada solamente por su fecha.
 2. Se detecta tipo, fecha y vendedores por columnas/contenido. El nombre no clasifica.
 3. Elegir Corrientes o Resistencia para **cada Puntos**, según la decisión del usuario.
    Puede existir una sugerencia interna por columnas explícitas, pero la UI exige elegir.
-4. Para Pedidos/PorCliente, confirmar el rango comercial realmente exportado, incluyendo
-   días sin movimientos. Las fechas mínimas/máximas de filas por sí solas no prueban
-   cobertura documental de los días vacíos.
-5. PorCliente conserva fechas por fila según confirmó el usuario. Indicar si el período
-   es fecha de entrega (caso de los archivos actuales) o fecha comercial.
+4. Pedidos y PorCliente se cargan para la semana seleccionada, sin preguntar rangos ni modos de fecha.
+   La vista previa muestra las fechas detectadas. El usuario carga todas las partes que exportó de CHESS.
+5. PorCliente conserva fechas por fila y se cruza por fecha de entrega.
 6. Confirmar el lote: recién entonces se copian archivos y se actualiza SQLite.
 
-Un hash ya cargado se ignora aunque cambie el nombre; se registra el rechazo.
+Un hash ya activo en esta semana se ignora aunque cambie el nombre; se muestra su ID y nombre original.
+Las cargas históricas, eliminadas o de otras semanas no bloquean una nueva carga.
 El hash corresponde a los bytes del Excel: volver a guardar un workbook puede
 producir otra versión aunque sus celdas parezcan iguales.
 
-Si el nuevo reporte cubre el mismo rango o lo amplía, queda activo. Un rango menor
-o diferente se conserva como histórico. En Archivos/Auditoría se puede hacer activa
-otra versión mediante acción explícita; recalcular usa **solo esa versión**, incluso
-si reduce la cobertura. Dos reportes disjuntos tampoco se suman automáticamente:
-exportar un acumulado que cubra el rango deseado o elegir uno como activo.
+Todos los reportes de Pedidos diferentes quedan activos como partes de la semana.
+Se combinan por número de pedido: la última carga actualiza importe, estado, fecha y
+demás campos del número repetido. Primero se combinan y después se filtra por entrega,
+para que una actualización de fecha o anulación también quite el valor anterior.
+Eliminar una parte vuelve a calcular desde las restantes. PorCliente conserva una
+sola versión activa y el último archivo reemplaza al anterior.
 
-Pedidos fuera del rango confirmado/semana o con fecha inválida se conservan crudos
+Pedidos con entrega fuera de la semana o fecha inválida/futura se conservan crudos
 y se excluyen con advertencia. La última modificación nunca asigna semana.
 
 ## Domingo y días no trabajados
 
-La semana comienza el lunes y termina el domingo inclusive. Alta domingo con entrega
-lunes pertenece a la semana que termina. Alta lunes pertenece a la siguiente.
+La semana comienza el lunes y termina el domingo inclusive. Un pedido con entrega
+lunes pertenece a la semana que comienza, aunque se haya creado el domingo o el año anterior.
 Domingo no espera Puntos ni genera visitas/cobertura. Sí suma pedidos, compradores,
 venta y artículos semanales. La cobertura de Pedidos/PorCliente debe incluirlo para
 declarar que la preventa semanal está completa, aunque no tenga movimientos.
@@ -131,7 +153,7 @@ hasta el día siguiente (fecha local de Windows). El usuario actualiza desde la 
 
 Se reconstruyen desde filas de las **versiones activas**, no sumando JSON diarios:
 
-- Pedido lógico: cliente + vendedor final + fecha comercial. Los componentes de
+- Pedido lógico: cliente + vendedor final + fecha de entrega. Los componentes de
   origen quedan auditados; reasignar al mismo destino no infla conteos.
 - Venta válida excluye anulados, conserva pendientes y retenidos; original incluye
   lo observado en la exportación, también anulados. Excluidos no aportan métricas.
@@ -154,16 +176,11 @@ Se muestra por separado **ventas hasta**, **artículos hasta** y **preventa comp
 Las fechas primeras son coberturas declaradas de reportes activos; la última es el
 avance documental continuo desde el lunes. Una semana incompleta permite analizar.
 
-PorCliente se cruza por cliente/vendedor original y fecha elegida:
-si es comercial, con alta; si es entrega, con entrega del pedido sin alterar su semana.
-Si varios pedidos lógicos de distintas fechas comparten período/cliente y tienen el
-mismo vendedor final, los artículos se contabilizan una vez a nivel semanal, sin
-inventar reparto por día. Si tienen destinos diferentes, se deja una advertencia y
-esas líneas no se atribuyen comercialmente hasta contar con detalle suficiente.
+PorCliente se cruza por cliente y fecha de entrega, con el vendedor final del pedido. Los destinos ambiguos se advierten; las líneas negativas se conservan separadas sin afectar preventa ni artículos vendidos.
 Sus fuentes crudas quedan conservadas. No se prorratean importes para forzar coincidencias.
-También se evita atribuir un período de entrega cuando comparte cliente/vendedor
-con pedidos detectados fuera del rango comercial: sin detalle adicional no es posible
-separar con certeza esos artículos entre semanas.
+Los pedidos sin vendedor se muestran como SIN ASIGNAR: requieren asignación en la revisión
+y una alerta informa el importe que aún no suma. Las revisiones anteriores basadas en alta
+deben confirmarse nuevamente; los cierres históricos conservan sus snapshots originales.
 
 Hora Venta sigue siendo señal SIGO; sin pedido conciliado se advierte. No genera
 importes o compradores ficticios. Puntos solo permiten calcular métricas sobre lo
@@ -213,8 +230,8 @@ como una nueva revisión semanal.
 
 1. Ejecutar `.venv\Scripts\python.exe main.py`: aparece Semanas, sin diálogo de Excel.
 2. Entrar a la semana de los datos y revisar Cargas / ¿QUÉ ME FALTA?.
-3. Seleccionar varios Puntos y reportes acumulados. Elegir sucursal, rangos y tipo de
-   período de PorCliente; confirmar. Verificar ACTIVA en Archivos/Auditoría.
+3. Seleccionar varios Puntos y partes de pedidos. Elegir sucursal para Puntos;
+   guardar. Verificar todas las partes ACTIVAS en Archivos/Auditoría.
 4. Subir un Excel idéntico renombrado: se ignora. Subir un acumulado ampliado:
    aparece otra versión y la venta no se duplica.
 5. Marcar una sucursal no trabajada y revertir. Revisar explicación y actividad.
@@ -228,7 +245,7 @@ como una nueva revisión semanal.
 
 ## Validación y pendientes
 
-La suite tiene 66 pruebas aprobadas: 22 anteriores y 44 semanales. Incluye los
+La suite contempla 79 pruebas: 22 anteriores y 57 semanales. Incluye los
 30 casos solicitados y regresiones adicionales de rangos,
 reapertura, persistencia al reiniciar, manipulación de archivos, reasignación y UI.
 Se ejecutó además una carga semanal con copias temporales de los cuatro Excel

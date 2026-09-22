@@ -111,7 +111,7 @@ def find_puntos_header(path: Path):
         )
 
 
-def validate_puntos(path: str, region: str) -> ValidationResult:
+def validate_puntos(path: str, region: str, allow_multiple=False) -> ValidationResult:
     path = Path(path)
 
     try:
@@ -165,7 +165,7 @@ def validate_puntos(path: str, region: str) -> ValidationResult:
                 message="No pude detectar la fecha de preventa.",
             )
 
-        if len(dates) > 1:
+        if len(dates) > 1 and not allow_multiple:
             return ValidationResult(
                 valid=False,
                 file_type=f"Puntos {region}",

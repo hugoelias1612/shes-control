@@ -96,7 +96,7 @@ class ArticlesWidget(QFrame):
         self.setStyleSheet(
             """
             QFrame {
-                background-color: #f8f8f8;
+                background-color: #fff9e6;
                 border: 1px solid #e4e4e4;
                 border-radius: 7px;
             }
@@ -1042,6 +1042,8 @@ class ReviewWindow(QMainWindow):
         main_layout = QVBoxLayout(
             central
         )
+        from app.theme import brand_header
+        main_layout.addWidget(brand_header("SHES Control"))
 
         main_layout.setContentsMargins(
             24,
@@ -1182,7 +1184,7 @@ class ReviewWindow(QMainWindow):
         self.confirm_button.setStyleSheet(
             """
             QPushButton {
-                background-color: #202020;
+                background-color: #d91c28;
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -1191,7 +1193,7 @@ class ReviewWindow(QMainWindow):
             }
 
             QPushButton:hover {
-                background-color: #333333;
+                background-color: #b71621;
             }
             """
         )
@@ -1225,7 +1227,7 @@ class ReviewWindow(QMainWindow):
         self.process_button.setStyleSheet(
             """
             QPushButton {
-                background-color: #176b3a;
+                background-color: #d91c28;
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -1234,7 +1236,7 @@ class ReviewWindow(QMainWindow):
             }
 
             QPushButton:hover {
-                background-color: #20854a;
+                background-color: #b71621;
             }
 
             QPushButton:disabled {
@@ -1255,7 +1257,7 @@ class ReviewWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background-color: #f4f4f4;
+                background-color: #fffdf7;
             }
             """
         )

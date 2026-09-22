@@ -9,10 +9,12 @@ from app.week_store import file_hash
 from app.review_window import ReviewWindow
 from app.dashboard_window import DashboardWindow, NumericItem, money
 from app.alerts_widget import AlertsWidget
+from app.theme import brand_header
+from app.review_data import normalize_seller
 
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QDialog,
-    QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+    QDialogButtonBox, QFileDialog, QHBoxLayout, QGridLayout, QHeaderView, QInputDialog, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPushButton, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -36,6 +38,8 @@ def table(headers, rows):
             widget.setItem(row, col, item)
     widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
     widget.horizontalHeader().setStretchLastSection(True)
+    widget.setAlternatingRowColors(True)
+    widget.verticalHeader().setVisible(False)
     widget.setSortingEnabled(True)
     return widget
 
@@ -67,18 +71,22 @@ class UploadDialog(QDialog):
         self.setWindowTitle("Revisar archivos antes de guardar")
         self.resize(1250, 600)
         layout = QVBoxLayout(self)
-        description = QLabel("Elegí la sucursal de cada Puntos. Para reportes, confirmá el rango COMERCIAL exportado, "
-                             "incluidos los días sin ventas. PorCliente conserva su período detectado; indicá si representa alta o entrega.")
+        description = QLabel(f"Semana: {week['start_date']} al {week['end_date']}. Pedidos por FECHA ENTREGA. "
+                             "Podés cargar todas las partes de CHESS: se combinan por número de pedido y la última carga actualiza los repetidos. "
+                             "PorCliente reemplaza al anterior. SIGO: sábado anterior a viernes; un Excel por sucursal. Elegí la sucursal de cada Puntos.")
         description.setWordWrap(True)
         layout.addWidget(description)
         self.grid = QTableWidget(len(self.candidates), 8)
         self.grid.setHorizontalHeaderLabels(["Importar", "Archivo / detección", "Tipo", "Sucursal",
-                                             "Desde comercial", "Hasta comercial", "Fechas PorCliente", "Resultado previsto"])
+                                             "Desde", "Hasta", "Fecha usada", "Resultado previsto"])
         self.controls = []
         seen = set()
         active = {u["logical_key"]: u for u in service.store.uploads(key, active=True)}
         for row, candidate in enumerate(self.candidates):
-            duplicate = bool(candidate.hash and (candidate.hash in seen or service.store.duplicate(candidate.hash)))
+            prior_duplicate = service.store.duplicate(candidate.hash, key) if candidate.hash else None
+            duplicate = bool(candidate.hash and (candidate.hash in seen or prior_duplicate))
+            duplicate_message = (f"Ya cargado en esta semana: #{prior_duplicate['id']} · {prior_duplicate['original_filename']}"
+                                 if prior_duplicate else "El mismo archivo está repetido en esta selección")
             seen.add(candidate.hash)
             check = QCheckBox()
             check.setChecked(not candidate.error and not duplicate)
@@ -96,26 +104,26 @@ class UploadDialog(QDialog):
             branch.setEnabled(candidate.kind == "puntos")
             self.grid.setCellWidget(row, 3, branch)
             start = candidate.coverage_start if candidate.kind == "puntos" else week["start_date"]
-            end = candidate.coverage_end if candidate.kind == "puntos" else (
-                min(week["end_date"], max(week["start_date"], candidate.detected_end or week["start_date"])))
+            end = candidate.coverage_end if candidate.kind == "puntos" else week["end_date"]
             starts, ends = date_edit(start or week["start_date"]), date_edit(end or week["end_date"])
-            starts.setEnabled(candidate.kind != "puntos")
-            ends.setEnabled(candidate.kind != "puntos")
+            starts.setEnabled(False)
+            ends.setEnabled(False)
             self.grid.setCellWidget(row, 4, starts)
             self.grid.setCellWidget(row, 5, ends)
             mode = QComboBox()
             mode.addItem("Fecha de entrega", "delivery")
-            mode.addItem("Fecha comercial (alta)", "commercial")
-            mode.addItem("Acumulado sin fecha diaria", "aggregate")
-            mode.setEnabled(candidate.kind == "porcliente")
+            mode.setEnabled(False)
             self.grid.setCellWidget(row, 6, mode)
-            status = QLabel(candidate.error or ("Duplicado exacto: ignorado" if duplicate else "Nuevo"))
+            status = QLabel(candidate.error or (duplicate_message if duplicate else "Nuevo"))
             status.setWordWrap(True)
             self.grid.setCellWidget(row, 7, status)
             def update_preview(*_, c=candidate, b=branch, a=starts, z=ends, label=status, dup=duplicate):
                 if c.error or dup:
                     return
-                logical_key = f"puntos:{a.date().toString('yyyy-MM-dd')}:{b.currentData()}" if c.kind == "puntos" else c.kind
+                if c.kind == "pedidos":
+                    label.setText("Se agrega a los pedidos de la semana; los números repetidos se actualizan")
+                    return
+                logical_key = f"puntos:semanal:{b.currentData()}" if c.kind == "puntos" else c.kind
                 prior = active.get(logical_key)
                 label.setText("Nuevo" if not prior else f"NUEVA VERSIÓN DISPONIBLE (activa v{prior['version']} conservada)")
             branch.currentIndexChanged.connect(update_preview)
@@ -127,8 +135,8 @@ class UploadDialog(QDialog):
         self.grid.resizeColumnsToContents()
         self.grid.resizeRowsToContents()
         layout.addWidget(self.grid)
-        self.confirm_ranges = QCheckBox("Confirmo que los rangos comerciales indicados corresponden a las exportaciones seleccionadas")
-        layout.addWidget(self.confirm_ranges)
+        for column in (4, 5, 6):
+            self.grid.setColumnHidden(column, True)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.commit)
         buttons.rejected.connect(self.reject)
@@ -142,7 +150,7 @@ class UploadDialog(QDialog):
             candidate.branch = branch.currentData()
             candidate.coverage_start = start.date().toString("yyyy-MM-dd")
             candidate.coverage_end = end.date().toString("yyyy-MM-dd")
-            candidate.metadata.update(coverage_confirmed=self.confirm_ranges.isChecked(), date_mode=mode.currentData())
+            candidate.metadata.update(coverage_confirmed=True, date_mode="delivery")
             selected.append(candidate)
         if not selected:
             QMessageBox.warning(self, "Sin archivos", "Seleccioná al menos un archivo válido")
@@ -152,7 +160,7 @@ class UploadDialog(QDialog):
         except Exception as error:
             QMessageBox.warning(self, "Revisar carga", str(error))
             return
-        QMessageBox.information(self, "Carga guardada", "\n".join(f"{r['name']}: {r['status']}" for r in results))
+        QMessageBox.information(self, "Carga guardada", "\n".join(f"{r['name']}: {r.get('detail', r['status'])}" for r in results))
         self.accept()
 
 
@@ -162,12 +170,12 @@ class WeeksWindow(QMainWindow):
         self.service = service or WeekService()
         self.controls = []
         self.service.store.scan_legacy()
-        self.setWindowTitle("SHES Control · Semanas comerciales")
+        self.setWindowTitle("SHES Control · Semanas")
         self.resize(1100, 740)
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.addWidget(QLabel("SEMANAS COMERCIALES · lunes a domingo"))
+        layout.addWidget(brand_header("Tu semana, en un solo lugar", "Elegí la semana de reparto. Cargá SIGO, Pedidos y PorCliente; después revisá los resultados."))
         self.week_table = table(["Semana", "Estado", "Venta parcial / cierre", "Datos hasta", "Historial anterior"], [])
         layout.addWidget(self.week_table)
         self.week_table.cellDoubleClicked.connect(lambda *_: self.open_selected())
@@ -196,7 +204,8 @@ class WeeksWindow(QMainWindow):
             snapshots = self.service.store.snapshots(week["id"])
             latest = snapshots[0] if snapshots else None
             data = json.loads(Path(latest["file_path"]).read_text(encoding="utf-8")) if latest else {}
-            stale = latest and latest["source_revision"] != week["revision"]
+            stale = latest and (latest["source_revision"] != week["revision"] or
+                                (week["status"] != "CERRADA" and data.get("calculation_version") != 3))
             legacy = self.service.store.query("SELECT COUNT(*) AS n FROM legacy_loads WHERE week_id=?", (week["id"],))[0]["n"]
             values = [f"{week['start_date']} – {week['end_date']}", self.service.progress(week["id"])["status"],
                       ("Actualizar resultados" if stale else money(data["company"]["sale"])) if data else "Sin procesar",
@@ -234,9 +243,11 @@ class WeekControlWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.addWidget(brand_header("Control semanal", "1 · SIGO de ambas sucursales     2 · Todas las partes de Pedidos     3 · PorCliente completo"))
         self.title = QLabel()
+        self.title.setWordWrap(True)
         layout.addWidget(self.title)
-        actions = QHBoxLayout()
+        actions = QGridLayout()
         self.upload_button = QPushButton("+ SUBIR ARCHIVOS")
         self.upload_button.clicked.connect(self.upload)
         self.review_button = QPushButton("REVISAR ASIGNACIONES")
@@ -244,17 +255,30 @@ class WeekControlWindow(QMainWindow):
         self.close_button = QPushButton()
         self.close_button.clicked.connect(self.close_or_reopen)
         for button in [self.upload_button, self.review_button]:
-            actions.addWidget(button)
+            actions.addWidget(button, actions.count() // 4, actions.count() % 4)
         for text, action in [("¿QUÉ ME FALTA?", self.missing), ("VER DASHBOARD", self.dashboard),
                              ("ACTUALIZAR SEMANA", self.recalculate), ("EXPORTAR JSON", self.export)]:
             button = QPushButton(text)
             button.clicked.connect(action)
-            actions.addWidget(button)
-        actions.addWidget(self.close_button)
+            actions.addWidget(button, actions.count() // 4, actions.count() % 4)
+        actions.addWidget(self.close_button, actions.count() // 4, actions.count() % 4)
         layout.addLayout(actions)
+        defaults = QPushButton("Vendedores excluidos por defecto…")
+        defaults.setObjectName("secondary")
+        defaults.clicked.connect(self.edit_defaults)
+        layout.addWidget(defaults)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         self.refresh()
+
+    def edit_defaults(self):
+        current = "\n".join(sorted(self.service.store.default_exclusions()))
+        text, ok = QInputDialog.getMultiLineText(self, "Exclusiones editables",
+            "Un vendedor por línea. Borrá un nombre para incluirlo por defecto.\n"
+            "Se aplica a semanas sin revisión confirmada; las revisadas se cambian en Revisión.", current)
+        if ok:
+            self.service.store.set_default_exclusions([normalize_seller(n) for n in text.splitlines() if n.strip()])
+            self.refresh()
 
     def guarded(self, action):
         try:
@@ -299,7 +323,7 @@ class WeekControlWindow(QMainWindow):
         summary = QWidget()
         layout = QVBoxLayout(summary)
         company = self.data["company"]
-        layout.addWidget(QLabel(f"PROGRESO COMERCIAL · Ventas hasta: {self.data.get('data_until') or 'sin pedidos'} · "
+        layout.addWidget(QLabel(f"AVANCE SEMANAL · Ventas hasta: {self.data.get('data_until') or 'sin pedidos'} · "
                                f"Artículos hasta: {self.data.get('articles_until') or 'sin PorCliente'}\n"
                                f"Preventa completa hasta: {self.data.get('complete_until') or 'todavía incompleta'}\n"
                                f"Venta acumulada: {money(company['sale'])} · Jornadas operativas procesadas: {company.get('working_days', 0)}\n"
@@ -338,17 +362,24 @@ class WeekControlWindow(QMainWindow):
             "providers", providers_table.item(row, 0).text()))
         self.tabs.addTab(filterable(providers_table), "Proveedores")
         self.tabs.addTab(self.liquidations_tab(progress), "Liquidaciones")
+        separated = QWidget()
+        separated_layout = QVBoxLayout(separated)
+        separated_layout.addWidget(QLabel("Movimientos negativos del archivo original. No descuentan preventa ni artículos vendidos. El vendedor mostrado es el de PorCliente."))
+        separated_layout.addWidget(filterable(table(["Fecha", "Cliente", "Vendedor origen", "Artículo", "Descripción", "Cantidad", "Importe"],
+            [[r["date"], r["client"], r["source_seller"], r["article"], r["description"], r["quantity"], r["amount"]]
+             for r in self.data.get("negative_movements", [])])))
+        self.tabs.addTab(separated, "Negativos separados")
         self.tabs.addTab(QLabel("Premios semanales: integración futura. Se conservarán pagos y cierres originales al reabrir."), "Premios")
         self.tabs.addTab(self.audit_tab(), "Archivos / Auditoría")
 
     def loads_tab(self, progress):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("PROGRESO DOCUMENTAL · La jornada actual y las futuras no se marcan faltantes."))
-        rows = [[d["name"] + " " + d["date"], d["branches"]["corrientes"], d["branches"]["resistencia"],
+        layout.addWidget(QLabel("CONTROL DE CARGA · SIGO se muestra en su fecha de preventa; Pedidos y PorCliente, en su fecha de reparto."))
+        rows = [[d["name"] + " " + d["date"], d["presale_date"] or "No aplica", d["branches"]["corrientes"], d["branches"]["resistencia"],
                  "CARGADO" if d["reports"]["pedidos"] else "—", "CARGADO" if d["reports"]["porcliente"] else "—",
                  d["state"]] for d in progress["days"]]
-        checklist = table(["Día", "Corrientes", "Resistencia", "Pedidos", "PorCliente", "Estado"], rows)
+        checklist = table(["Reparto", "Preventa SIGO", "Corrientes", "Resistencia", "Pedidos", "PorCliente", "Estado"], rows)
         checklist.setSortingEnabled(False)
         # La tabla puede ordenarse, pero se abre en orden calendario, no alfabético.
         for row in range(checklist.rowCount()):
@@ -358,8 +389,13 @@ class WeekControlWindow(QMainWindow):
         checklist.setSortingEnabled(True)
         checklist.sortItems(0, Qt.AscendingOrder)
         layout.addWidget(checklist)
-        sunday = self.data.get("sunday", {})
-        layout.addWidget(QLabel(f"Domingo: SIGO no aplica · Pedidos excepcionales: {sunday.get('logical_orders', 0)} · Venta: {money(sunday.get('sale', 0))}"))
+        daily = self.data.get("daily_totals", []) + self.data.get("daily_activity", [])
+        detail = table(["Vendedor", "Preventa", "Reparto", "Cartera", "Visitados", "Vendidos SIGO"],
+            [[r["seller"], r["presale_date"], r["delivery_date"], r["assigned"], r["visited"], r["sold_sigo"]] for r in daily])
+        layout.addWidget(QLabel("Actividad por vendedor y día · Vendidos SIGO cuenta clientes con Hora Venta, sin inventar importes."))
+        layout.addWidget(filterable(detail))
+        parts = sum(u["type"] == "pedidos" for u in self.service.store.uploads(self.key, active=True))
+        layout.addWidget(QLabel(f"Pedidos: {parts} archivo(s) activos. Se combinan por número y fecha de entrega dentro de esta semana."))
         actions = QHBoxLayout()
         self.work_date = date_edit(progress["week"]["start_date"])
         self.work_branch = QComboBox()
@@ -406,7 +442,7 @@ class WeekControlWindow(QMainWindow):
         rows = [[d["date"], d["liquidations"]["count_uploaded"],
                  "Confirmadas" if d["liquidations"]["confirmed_complete"] else "Sin confirmar",
                  d["liquidations"]["confirmed_at"] or "—", d["liquidations"]["note"]] for d in progress["days"]]
-        layout.addWidget(table(["Jornada comercial", "Cargadas", "Completas", "Confirmación", "Nota"], rows))
+        layout.addWidget(table(["Fecha", "Cargadas", "Completas", "Confirmación", "Nota"], rows))
         actions = QHBoxLayout()
         self.liq_date = date_edit(progress["week"]["start_date"])
         actions.addWidget(self.liq_date)
@@ -424,7 +460,7 @@ class WeekControlWindow(QMainWindow):
         if not paths:
             return
         day = self.liq_date.date().toString("yyyy-MM-dd")
-        if QMessageBox.question(self, "Confirmar adjuntos", f"¿Guardar {len(paths)} liquidaciones para la jornada comercial {day}?") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Confirmar adjuntos", f"¿Guardar {len(paths)} liquidaciones para el {day}?") != QMessageBox.Yes:
             return
         def save():
             candidates = [UploadCandidate(Path(p), file_hash(p), "liquidacion", coverage_start=day, coverage_end=day,
@@ -443,10 +479,18 @@ class WeekControlWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         uploads = self.service.store.uploads(self.key)
-        self.file_table = table(["ID", "Tipo", "Sucursal", "Rango comercial", "Versión", "Estado", "Nombre", "SHA-256", "Subido"],
+        self.upload_revision = self.service.store.week(self.key)["revision"]
+        self.file_table = table(["ID", "Tipo", "Sucursal", "Fechas", "Versión", "Estado", "Nombre", "SHA-256", "Subido"],
             [[u["id"], u["type"], u["branch"] or "—", f"{u['coverage_start']} / {u['coverage_end']}", u["version"],
-              "ACTIVA" if u["active"] else "HISTÓRICA", u["original_filename"], u["hash"], u["uploaded_at"]] for u in uploads])
+              "ELIMINADA" if u["removed_at"] else "ACTIVA" if u["active"] else "HISTÓRICA", u["original_filename"], u["hash"], u["uploaded_at"]] for u in uploads])
+        self.file_table.setSelectionMode(QTableWidget.ExtendedSelection)
         layout.addWidget(filterable(self.file_table))
+        layout.addWidget(QLabel("Seleccioná varias cargas con Ctrl o Shift. Las eliminadas se conservan solo en auditoría."))
+        self.remove_uploads_button = QPushButton("Eliminar cargas seleccionadas")
+        self.remove_uploads_button.setObjectName("danger")
+        self.remove_uploads_button.setEnabled(not self.closed)
+        self.remove_uploads_button.clicked.connect(self.remove_selected_uploads)
+        layout.addWidget(self.remove_uploads_button)
         activate = QPushButton("Hacer ACTIVA la versión seleccionada")
         activate.setEnabled(not self.closed)
         activate.clicked.connect(self.activate_selected)
@@ -497,6 +541,26 @@ class WeekControlWindow(QMainWindow):
                 detail.setPlainText(path.read_text(encoding="utf-8"))
         files.cellDoubleClicked.connect(inspect)
         dialog.exec()
+
+    def remove_selected_uploads(self):
+        rows = sorted(index.row() for index in self.file_table.selectionModel().selectedRows()
+                      if not self.file_table.isRowHidden(index.row()))
+        rows = [row for row in rows if self.file_table.item(row, 5).text() != "ELIMINADA"]
+        if not rows:
+            QMessageBox.information(self, "Eliminar cargas", "Seleccioná cargas que todavía no estén eliminadas.")
+            return
+        ids = [int(self.file_table.item(row, 0).text()) for row in rows]
+        names = "\n".join(f"• #{self.file_table.item(row, 0).text()} · {self.file_table.item(row, 6).text()}" for row in rows)
+        message = (f"¿Eliminar estas {len(ids)} cargas de la semana?\n\n{names}\n\n"
+                   "Se recalcularán los resultados y habrá que confirmar nuevamente revisión y liquidaciones. "
+                   "No se activará una versión anterior automáticamente. Podés volver a subir los mismos Excel. "
+                   "Los archivos y resultados históricos se conservan en auditoría.")
+        if QMessageBox.question(self, "Eliminar cargas", message, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.guarded(lambda: self.service.store.remove_uploads(self.key, ids, self.upload_revision))
+        self.refresh()
+        self.tabs.setCurrentIndex(self.tabs.count() - 1)
 
     def activate_selected(self):
         row = self.file_table.currentRow()

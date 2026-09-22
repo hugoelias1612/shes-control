@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from app.week_calendar import week_bounds, week_id, calendar_weeks, BRANCHES
+from app.week_calendar import week_bounds, week_id, calendar_weeks, BRANCHES, presale_for_delivery
 from app.week_imports import inspect_upload, inspect_batch, UploadCandidate, detect_branch
 from app.week_store import WeekStore, file_hash
 from app.week_service import WeekService
@@ -38,7 +38,7 @@ class WeekTests(unittest.TestCase):
 
     def points(self, day=MON, branch="corrientes", seller="A", client=1, visited=1):
         row = point(client, seller, visited)
-        row["dia"] = day.strftime("%d/%m/%Y")
+        row["dia"] = presale_for_delivery(day).strftime("%d/%m/%Y")
         candidate = inspect_upload(self.excel([row]))
         candidate.branch = branch
         return candidate
@@ -51,7 +51,8 @@ class WeekTests(unittest.TestCase):
         return candidate
 
     def order(self, number=1, day=MON, seller="A", client=1, total=100):
-        return physical(number, seller, client, total, day.strftime("%d/%m/%Y"))
+        return physical(number, seller, client, total, day.strftime("%d/%m/%Y"),
+                        **{"FECHA ENTREGA": day.strftime("%d/%m/%Y")})
 
     def line(self, day=MON, seller="A", client=1, code=10, amount=100):
         row = article(client, seller, code, amount)
@@ -79,6 +80,171 @@ class WeekTests(unittest.TestCase):
         self.assertIn(MON, calendar_weeks(MON))
         self.assertEqual(week_id(date(2027, 1, 1)), "2026-W53")
 
+    def test_weekly_sigo_maps_each_presale_row_to_delivery(self):
+        rows = []
+        for d in [MON, MON + timedelta(days=1)]:
+            row = point(1, "A", 1, "09:00")
+            row["dia"] = presale_for_delivery(d).strftime("%d/%m/%Y")
+            rows.append(row)
+        candidate = inspect_upload(self.excel(rows))
+        candidate.branch = "corrientes"
+        self.upload(candidate)
+        data = self.service.metrics(self.key)
+        self.assertEqual([r["assigned"] for r in data["daily_totals"]], [1, 1])
+        self.assertEqual([r["sold_sigo"] for r in data["daily_totals"]], [1, 1])
+        self.assertEqual(self.service.progress(self.key)["days"][0]["presale_date"], "2026-09-19")
+
+    def test_default_exclusions_can_be_removed_without_code_changes(self):
+        self.upload(self.report([self.order(seller="ROLON BRAIAN")]))
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 0)
+        self.store.set_default_exclusions([])
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 100)
+        self.assertEqual(WeekStore(self.store.root).default_exclusions(), set())
+
+    def test_articles_follow_order_seller_and_negatives_are_separate(self):
+        self.upload(self.report([self.order()]), self.report([
+            self.line(seller="OTRO", amount=100), self.line(seller="OTRO", code=20, amount=-50)]))
+        data = self.service.metrics(self.key)
+        self.assertEqual(data["company"]["sale"], 100)
+        self.assertEqual(data["articles"][0]["sale"], 100)
+        self.assertEqual(data["negative_movements"][0]["amount"], -50)
+
+    def test_split_orders_latest_number_wins_and_removal_reverts_update(self):
+        self.upload(self.report([self.order(1), self.order(2, total=200)]))
+        first = self.store.uploads(self.key)[0]
+        self.upload(self.report([self.order(2, total=250), self.order(3, total=300)]))
+        second = self.store.uploads(self.key)[-1]
+        self.assertEqual(len(self.store.uploads(self.key, True)), 2)
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 650)
+        annulled = self.order(2, total=250)
+        annulled["ANULADO"] = "SI"
+        self.upload(self.report([annulled]))
+        third = self.store.uploads(self.key)[-1]
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 400)
+        self.store.remove_uploads(self.key, [third["id"], second["id"]])
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 300)
+        self.assertTrue(self.store.uploads(self.key, True)[0]["id"] == first["id"])
+
+    def test_week_is_delivery_even_when_creation_is_previous_year(self):
+        row = self.order()
+        row["FECHA/HORA DE ALTA"] = "28/10/2025 09:00"
+        candidate = self.report([row])
+        self.assertEqual(candidate.detected_start, MON.isoformat())
+        self.upload(candidate)
+        session, _, _, _ = self.service.build_session(self.key)
+        self.assertEqual(session.company_valid_total(), 100)
+        self.assertEqual(session.orders[0].preventa_day, MON.isoformat())
+
+    def test_missing_seller_can_be_assigned_in_review(self):
+        self.upload(self.report([self.order(seller=""), self.order(2, seller="A")]))
+        session, _, _, revision = self.service.build_session(self.key)
+        self.assertEqual(session.company_valid_total(), 100)
+        with self.assertRaisesRegex(ValueError, "Asigná"):
+            self.service.confirm_review(self.key, session, revision)
+        next(o for o in session.orders if o.original_seller == "SIN ASIGNAR").assigned_seller = "A"
+        self.service.confirm_review(self.key, session, revision)
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 200)
+
+    def test_duplicate_scope_is_active_week_and_historical_file_can_reload(self):
+        first = self.points()
+        self.upload(first)
+        other_key = self.store.ensure_week(MON + timedelta(days=7))["id"]
+        self.assertIsNone(self.store.duplicate(first.hash, other_key))
+        self.upload(self.points(visited=0))
+        self.assertIsNone(self.store.duplicate(first.hash, self.key))
+        self.assertEqual(self.upload(first)[0]["status"], "ACTIVA")
+
+    def test_upload_ui_accepts_distinct_parts_without_date_questions(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from app.week_window import UploadDialog
+        app = QApplication.instance() or QApplication([])
+        candidates = [self.report([self.order()]), self.report([self.order(2)])]
+        dialog = UploadDialog(self.service, self.key, [c.path for c in candidates])
+        self.assertTrue(all(controls[0].isChecked() for controls in dialog.controls))
+        self.assertTrue(all(dialog.grid.isColumnHidden(c) for c in (4, 5, 6)))
+        with patch.object(QMessageBox, "information"):
+            dialog.commit()
+        self.assertEqual(len(self.store.uploads(self.key, True)), 2)
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 200)
+        dialog.close()
+        app.processEvents()
+
+    def test_remove_upload_preserves_file_and_allows_same_excel_again(self):
+        candidate = self.points()
+        self.upload(candidate)
+        original = self.store.uploads(self.key)[0]
+        revision = self.store.week(self.key)["revision"]
+        self.store.remove_uploads(self.key, [original["id"]], revision)
+        self.assertEqual(self.store.uploads(self.key, active=True), [])
+        self.assertEqual(file_hash(original["file_path"]), original["hash"])
+        self.assertTrue(self.store.uploads(self.key)[0]["removed_at"])
+        self.assertIsNone(self.store.duplicate(candidate.hash))
+        with self.assertRaisesRegex(ValueError, "eliminada"):
+            self.store.activate(self.key, original["id"])
+        self.upload(candidate)
+        self.assertEqual(self.store.uploads(self.key, active=True)[0]["version"], 2)
+
+    def test_remove_batch_is_atomic_and_checks_revision_and_closed_week(self):
+        self.upload(self.points())
+        upload_id = self.store.uploads(self.key)[0]["id"]
+        revision = self.store.week(self.key)["revision"]
+        for ids, rev in [([upload_id, -1], revision), ([upload_id], revision - 1)]:
+            with self.assertRaises(ValueError):
+                self.store.remove_uploads(self.key, ids, rev)
+            self.assertEqual(len(self.store.uploads(self.key, active=True)), 1)
+        with self.store.connect() as db:
+            db.execute("UPDATE weeks SET status='CERRADA' WHERE id=?", (self.key,))
+        with self.assertRaisesRegex(ValueError, "cerrada"):
+            self.store.remove_uploads(self.key, [upload_id])
+
+    def test_remove_does_not_activate_old_version_and_invalidates_confirmations(self):
+        self.upload(self.points())
+        self.upload(self.points(client=2))
+        active = self.store.uploads(self.key, active=True)[0]
+        self.store.confirm_liquidations(self.key, MON, "Sin repartos")
+        self.store.remove_uploads(self.key, [active["id"]])
+        self.assertEqual(self.store.uploads(self.key, active=True), [])
+        self.assertFalse(self.store.liquidations(self.key)[0]["confirmed_complete"])
+        old = self.store.uploads(self.key)[0]
+        self.store.activate(self.key, old["id"])
+        self.assertEqual(self.store.uploads(self.key, active=True)[0]["id"], old["id"])
+
+    def test_migration_preserves_existing_uploads(self):
+        self.upload(self.points())
+        with self.store.connect() as db:
+            db.execute("ALTER TABLE uploads DROP COLUMN removed_at")
+            db.execute("DELETE FROM schema_version WHERE version=2")
+        migrated = WeekStore(self.store.root)
+        self.assertEqual(len(migrated.uploads(self.key, active=True)), 1)
+        self.assertIsNone(migrated.uploads(self.key)[0]["removed_at"])
+        WeekStore(self.store.root)
+
+    def test_remove_from_sorted_ui_recalculates_and_cancel_preserves_uploads(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from app.week_window import WeekControlWindow
+        app = QApplication.instance() or QApplication([])
+        self.base_data()
+        window = WeekControlWindow(self.service, self.key)
+        self.assertEqual(window.data["company"]["sale"], 100)
+        window.file_table.sortItems(0, Qt.DescendingOrder)
+        row = next(r for r in range(window.file_table.rowCount())
+                   if window.file_table.item(r, 1).text() == "pedidos")
+        upload_id = int(window.file_table.item(row, 0).text())
+        window.file_table.selectRow(row)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.No):
+            window.remove_selected_uploads()
+        self.assertEqual(len(self.store.uploads(self.key, active=True)), 4)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            window.remove_selected_uploads()
+        self.assertEqual(window.data["company"]["sale"], 0)
+        self.assertTrue(next(u for u in self.store.uploads(self.key) if u["id"] == upload_id)["removed_at"])
+        self.assertEqual(len(self.store.uploads(self.key, active=True)), 3)
+        window.close()
+        app.processEvents()
+
     def test_02_sunday_belongs_ending_week(self):
         self.assertEqual(week_id(SUN), self.key)
 
@@ -90,7 +256,7 @@ class WeekTests(unittest.TestCase):
                       self.points(day=MON + timedelta(days=1), client=3)]
         self.assertEqual(len(inspect_batch([c.path for c in candidates])), 3)
         self.assertEqual(len(self.upload(*candidates)), 3)
-        self.assertEqual(len(self.store.uploads(self.key, active=True)), 3)
+        self.assertEqual(len(self.store.uploads(self.key, active=True)), 2)
 
     def test_05_branch_requires_selection_even_with_arbitrary_filename(self):
         c = self.points()
@@ -101,7 +267,7 @@ class WeekTests(unittest.TestCase):
 
     def test_06_date_detected_from_content(self):
         c = self.points(day=MON + timedelta(days=1))
-        self.assertEqual(c.detected_start, "2026-09-22")
+        self.assertEqual(c.detected_start, "2026-09-21")
 
     def test_07_hash_duplicate_under_another_name(self):
         c = self.points()
@@ -292,7 +458,7 @@ class WeekTests(unittest.TestCase):
         window.show()
         control = WeekControlWindow(self.service, self.key)
         control.show()
-        self.assertEqual(control.tabs.count(), 8)
+        self.assertEqual(control.tabs.count(), 9)
         c = self.points()
         preview = UploadDialog(self.service, self.key, [c.path])
         self.assertEqual(preview.candidates[0].kind, "puntos")
@@ -303,11 +469,11 @@ class WeekTests(unittest.TestCase):
         control.close()
         window.close()
 
-    def test_versions_with_shorter_range_stay_historical(self):
+    def test_order_part_with_shorter_range_updates_repeated_number(self):
         self.upload(self.report([self.order()], end=SUN))
         self.upload(self.report([self.order(total=200)], end=MON))
-        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 100)
-        self.assertFalse(self.store.uploads(self.key)[-1]["active"])
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 200)
+        self.assertTrue(self.store.uploads(self.key)[-1]["active"])
 
     def test_reassignment_survives_replacement_and_requires_confirmation(self):
         self.base_data()
@@ -319,21 +485,20 @@ class WeekTests(unittest.TestCase):
         self.assertEqual(next(s for s in data["sellers"] if s["seller"] == "B")["sale"], 200)
         self.assertTrue(any("confirmada" in warning for warning in data["warnings"]))
 
-    def test_delivery_period_cross_week_maps_to_sunday(self):
+    def test_delivery_next_monday_is_not_moved_back_to_sunday(self):
         row = self.order(1, SUN)
         row["FECHA ENTREGA"] = "28/09/2026"
         self.upload(self.report([row]), self.report([self.line(SUN + timedelta(days=1))], mode="delivery"))
-        self.assertEqual(self.service.metrics(self.key)["articles"][0]["sale"], 100)
+        self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 0)
         monday = self.order(2, SUN + timedelta(days=1))
         monday["FECHA ENTREGA"] = "28/09/2026"
         self.upload(self.report([row, monday]))
-        # El detalle por entrega no permite separar dos semanas del mismo cliente.
         data = self.service.metrics(self.key)
-        self.assertEqual(data["company"]["sale"], 100)
+        self.assertEqual(data["company"]["sale"], 0)
         self.assertEqual(data["articles"], [])
         self.assertTrue(any("fuera del rango" in w for w in data["warnings"]))
 
-    def test_ambiguous_day_articles_not_duplicated(self):
+    def test_dated_articles_follow_delivery_day_and_reassignment(self):
         tue = MON + timedelta(days=1)
         self.upload(self.report([self.order(), self.order(2, tue)]),
                     self.report([self.line(amount=200)], mode="aggregate"))
@@ -342,7 +507,9 @@ class WeekTests(unittest.TestCase):
         session.sellers.append("B")
         session.orders[0].assigned_seller = "B"
         self.service.confirm_review(self.key, session, revision)
-        self.assertEqual(self.service.metrics(self.key)["articles"], [])
+        data = self.service.metrics(self.key)
+        self.assertEqual(data["articles"][0]["sale"], 200)
+        self.assertEqual(next(s for s in data["sellers"] if s["seller"] == "B")["articles"][0]["sale"], 200)
 
     def test_duplicate_in_same_batch_and_stale_preview(self):
         a = self.points()
@@ -398,20 +565,21 @@ class WeekTests(unittest.TestCase):
         data = self.service.metrics(self.key)
         self.assertEqual(data["company"]["sale"], 200)
         self.assertEqual(data["company"]["logical_orders"], 1)
-        self.assertEqual(data["articles"][0]["sale"], 200)
-        self.assertEqual(data["articles"][0]["clients"], 1)
+        self.assertEqual(data["articles"], [])  # Otro vendedor excluido comparte cliente/fecha: cruce ambiguo.
+        self.assertTrue(any("pendientes de atribución" in w for w in data["warnings"]))
         a = next(s for s in data["sellers"] if s["seller"] == "A")
         self.assertEqual(a["visited_clients"], 1)
         self.assertEqual(a["sale"], 0)
 
     def test_activity_outside_report_range_not_counted_as_zero_sale(self):
         self.base_data()
+        self.store.remove_uploads(self.key, [u["id"] for u in self.store.uploads(self.key) if u["type"] == "pedidos"])
         self.upload(self.report([self.order(total=110)], end=MON))
         self.store.activate(self.key, self.store.uploads(self.key)[-1]["id"])
         self.upload(self.points(day=MON + timedelta(days=1), client=3))
         data = self.service.metrics(self.key)
         self.assertEqual(data["company"]["assigned_clients"], 2)
-        self.assertEqual(data["company"]["conversion_pct"], 50)
+        self.assertEqual(data["company"]["conversion_pct"], 0)
 
     def test_sqlite_state_and_closed_read_only_survive_restart(self):
         self.ready_to_close()
@@ -446,6 +614,7 @@ class WeekTests(unittest.TestCase):
         window = WeekControlWindow(self.service, self.key)
         self.assertFalse(window.upload_button.isEnabled())
         self.assertFalse(window.review_button.isEnabled())
+        self.assertFalse(window.remove_uploads_button.isEnabled())
         self.assertEqual(window.close_button.text(), "REABRIR SEMANA")
         window.close()
         app.processEvents()

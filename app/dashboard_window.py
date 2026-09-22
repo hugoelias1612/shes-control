@@ -758,6 +758,8 @@ class DashboardWindow(QMainWindow):
         layout = QVBoxLayout(
             central
         )
+        from app.theme import brand_header
+        layout.addWidget(brand_header("SHES Control"))
 
         layout.setContentsMargins(
             20,

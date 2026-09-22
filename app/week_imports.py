@@ -10,7 +10,7 @@ from app.importers import (PEDIDOS_REQUIRED_COLUMNS,
                            validate_puntos, validate_pedidos, validate_porcliente)
 from app.review_data import (clean_text, normalize_text, normalize_seller,
                              load_points_file, load_orders_file, load_porcliente_file)
-from app.week_calendar import BRANCHES, as_date
+from app.week_calendar import BRANCHES, as_date, delivery_for_presale
 from app.week_store import file_hash
 
 
@@ -31,9 +31,11 @@ class UploadCandidate:
     @property
     def logical_key(self):
         if self.kind == "puntos":
-            return f"puntos:{self.coverage_start}:{self.branch}"
+            return f"puntos:semanal:{self.branch}"
         if self.kind == "liquidacion":
             return f"liquidacion:{self.hash}"
+        if self.kind == "pedidos":
+            return f"pedidos:{self.hash}"
         return self.kind
 
     def validate(self, week):
@@ -43,19 +45,20 @@ class UploadCandidate:
             raise ValueError("Tipo de archivo no reconocido")
         start, end = as_date(self.coverage_start), as_date(self.coverage_end)
         if not week["start_date"] <= start.isoformat() <= end.isoformat() <= week["end_date"]:
-            raise ValueError("El rango comercial debe estar dentro de la semana seleccionada")
+            raise ValueError("Las fechas deben estar dentro de la semana seleccionada")
         if self.kind == "puntos":
             if self.branch not in BRANCHES:
                 raise ValueError("Elegí Corrientes o Resistencia para cada archivo de Puntos")
-            if start != end or start.weekday() == 6 or start.isoformat() != self.detected_start:
-                raise ValueError("Puntos debe conservar su fecha detectada, de lunes a sábado")
+            for value in self.metadata.get("presale_dates", [self.detected_start]):
+                day = as_date(value)
+                delivery = delivery_for_presale(day).isoformat()
+                if day.weekday() == 6 or not week["start_date"] <= delivery <= week["end_date"]:
+                    raise ValueError("SIGO debe contener preventa del sábado anterior al viernes de esta semana")
         else:
             if not self.metadata.get("coverage_confirmed"):
-                raise ValueError("Confirmá el rango comercial exportado, incluidos días sin movimientos")
-        if self.kind == "porcliente" and self.metadata.get("date_mode") not in {"aggregate", "commercial", "delivery"}:
-            raise ValueError("Indicá cómo interpretar las fechas de PorCliente")
+                raise ValueError("Falta indicar la semana del reporte")
         if self.kind == "liquidacion" and start != end:
-            raise ValueError("Asociá la liquidación a una sola jornada comercial")
+            raise ValueError("Asociá la liquidación a una sola fecha")
 
 
 def detect_branch(dataframe):
@@ -95,16 +98,17 @@ def inspect_upload(path):
         return candidate
     candidate.kind = candidates.pop()
     if candidate.kind == "puntos":
-        result = validate_puntos(path, "por confirmar")
+        result = validate_puntos(path, "por confirmar", allow_multiple=True)
         df = load_points_file(path)
         dates = parse_date_series(df.loc[df["idcliente"].notna(), "dia"])
+        candidate.metadata["presale_dates"] = sorted({d.isoformat() for d in dates.dropna()})
         candidate.branch = detect_branch(df)
         seller_column = "d_perso"
     elif candidate.kind == "pedidos":
         result = validate_pedidos(path)
         df = load_orders_file(path)
         df = df[df["NÚMERO PEDIDO"].notna()]
-        dates = parse_date_series(df["FECHA/HORA DE ALTA"])
+        dates = parse_date_series(df["FECHA ENTREGA"])
         seller_column = "VENDEDOR DEL PEDIDO"
         candidate.metadata["invalid_dates"] = int(dates.isna().sum())
     else:
@@ -112,7 +116,7 @@ def inspect_upload(path):
         df = load_porcliente_file(path)
         dates = parse_date_series(df["Descripción Período"])
         seller_column = "Descripción Vendedor"
-        candidate.metadata["date_mode"] = "aggregate"
+        candidate.metadata["date_mode"] = "delivery"
     if not result.valid:
         candidate.error = result.message
     valid = dates.dropna()
@@ -121,6 +125,9 @@ def inspect_upload(path):
         candidate.detected_end = max(valid).isoformat()
         candidate.coverage_start = candidate.detected_start
         candidate.coverage_end = candidate.detected_end
+        if candidate.kind == "puntos":
+            candidate.coverage_start = delivery_for_presale(min(valid)).isoformat()
+            candidate.coverage_end = delivery_for_presale(max(valid)).isoformat()
     elif candidate.kind != "porcliente":
         candidate.error = "No se detectaron fechas válidas"
     candidate.sellers = sorted({normalize_seller(v) for v in df[seller_column] if clean_text(v)})

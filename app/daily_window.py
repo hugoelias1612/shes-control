@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         self.save_button.setStyleSheet(
             """
             QPushButton {
-                background-color: #202020;
+                background-color: #d91c28;
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
             }
 
             QPushButton:hover {
-                background-color: #303030;
+                background-color: #b71621;
             }
 
             QPushButton:disabled {
@@ -272,7 +272,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background-color: #f4f4f4;
+                background-color: #fffdf7;
             }
             """
         )

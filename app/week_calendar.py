@@ -5,6 +5,16 @@ BRANCHES = ("corrientes", "resistencia")
 DAY_NAMES = ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo")
 
 
+def delivery_for_presale(value):
+    day = as_date(value)
+    return day + timedelta(days=2 if day.weekday() == 5 else 1)
+
+
+def presale_for_delivery(value):
+    day = as_date(value)
+    return day - timedelta(days=2 if day.weekday() == 0 else 1)
+
+
 def as_date(value):
     return value if isinstance(value, date) else date.fromisoformat(value)
 

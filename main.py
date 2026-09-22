@@ -7,6 +7,8 @@ from PySide6.QtWidgets import QApplication
 
 def main():
     application = QApplication(sys.argv)
+    from app.theme import apply_theme
+    apply_theme(application)
     window = WeeksWindow()
     window.show()
     return application.exec()
