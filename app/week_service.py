@@ -297,11 +297,13 @@ class WeekService:
         orders = [o for o in session.orders if not o.fully_annulled and o.assigned_seller in included]
         article_orders = [o for o in carriers if o.assigned_seller in included]
         total = sum(o.valid_total for o in orders)
+        active_types = {u["type"] for u in self.store.uploads(key, active=True)}
         completed_days = {d["date"] for d in progress["days"] if d["commercial_complete"]
                           and not d["no_work"] and not d["sunday"] and as_date(d["date"]) < self.now()}
 
         def summarize(selected, article_selected, selected_sellers):
             sale = sum(o.valid_total for o in selected)
+            sale_net = None if any(o.net_total is None for o in selected) else round(sum(o.net_total for o in selected), 2)
             buyers = {o.client_code for o in selected}
             assigned, visited, working_dates = set(), set(), set()
             operational_buyers = set()
@@ -316,7 +318,10 @@ class WeekService:
             providers = aggregate_providers(articles, sale, len(buyers))
             mix_pairs = {(o.client_code, a.code) for o in article_selected for a in o.articles}
             operational_sale = sum(o.valid_total for o in selected if o.preventa_day in working_dates)
-            return {"sale": round(sale, 2), "buyers": len(buyers), "assigned_clients": len(assigned),
+            return {"sale": round(sale, 2), "sale_net": sale_net,
+                    "average_ticket_net": round(sale_net / len(buyers), 2) if buyers and sale_net is not None else None,
+                    "reward_availability": {"orders": "pedidos" in active_types, "articles": "porcliente" in active_types,
+                                            "sigo": bool(assigned)}, "buyers": len(buyers), "assigned_clients": len(assigned),
                     "visited_clients": len(visited), "not_visited_clients": len(assigned - visited),
                     "coverage_pct": round(percentage(len(visited), len(assigned)), 2),
                     "portfolio_use_pct": round(percentage(len(operational_buyers), len(assigned)), 2),
@@ -391,18 +396,27 @@ class WeekService:
     def process(self, key):
         data = self.metrics(key)
         if self.store.week(key)["status"] != "CERRADA":
+            from app.rewards import RewardService
+            data["awards"] = RewardService(self).calculate(key, data)
             self.store.save_snapshot(key, data)
         return data
 
-    def export(self, key, path):
+    def export_path(self, path, suffix=".json"):
         target = Path(path).resolve()
         repo = Path(__file__).resolve().parents[1]
         history = (self.store.root / "HISTORIAL").resolve()
         if repo == target or repo in target.parents or history == target or history in target.parents:
             raise ValueError("Exportá fuera del repositorio y del historial protegido")
-        if target.suffix.lower() != ".json":
-            raise ValueError("La exportación debe tener extensión .json")
-        return write_json(target, self.metrics(key))
+        if target.suffix.lower() != suffix:
+            raise ValueError(f"La exportación debe tener extensión {suffix}")
+        return target
+
+    def export(self, key, path):
+        data = self.metrics(key)
+        if self.store.week(key)["status"] != "CERRADA":
+            from app.rewards import RewardService
+            data["awards"] = RewardService(self).calculate(key, data)
+        return write_json(self.export_path(path), data)
 
     def close(self, key):
         progress = self.progress(key)
@@ -415,6 +429,8 @@ class WeekService:
                 or json.loads(review["payload"]).get("calculation_version") != 3):
             raise ValueError("Confirmá la revisión de las versiones activas antes del cierre")
         data = self.metrics(key)
+        from app.rewards import RewardService
+        awards = RewardService(self).closing(key, data)
         data.update(status="CERRADA", closed_at=timestamp(), administrative_closed=True,
-                    liquidations=self.store.liquidations(key), awards=None)
+                    liquidations=self.store.liquidations(key), awards=awards)
         return self.store.save_snapshot(key, data, kind="cierre", close=True)

@@ -184,6 +184,7 @@ def aggregate_articles(
 
                     "quantity": 0.0,
                     "sale": 0.0,
+                    "sale_net": 0.0,
 
                     "clients": set(),
                 }
@@ -192,6 +193,10 @@ def aggregate_articles(
                 key
             ]
 
+            if article.net_total is None or item["sale_net"] is None:
+                item["sale_net"] = None
+            else:
+                item["sale_net"] += article.net_total
             item["quantity"] += (
                 article.quantity
             )
@@ -247,6 +252,7 @@ def aggregate_articles(
                     2,
                 ),
 
+                "sale_net": round(item["sale_net"], 2) if item["sale_net"] is not None else None,
                 "sale_share_pct": round(
                     percentage(
                         item["sale"],
@@ -292,6 +298,7 @@ def aggregate_providers(
             ] = {
                 "provider": provider,
                 "sale": 0.0,
+                "sale_net": 0.0,
                 "quantity": 0.0,
                 "articles": set(),
                 "clients": set(),
@@ -305,6 +312,10 @@ def aggregate_providers(
             article["sale"]
         )
 
+        if article.get("sale_net") is None or item["sale_net"] is None:
+            item["sale_net"] = None
+        else:
+            item["sale_net"] += article["sale_net"]
         item["quantity"] += (
             article["quantity"]
         )
@@ -330,6 +341,7 @@ def aggregate_providers(
                     2,
                 ),
 
+                "sale_net": round(item["sale_net"], 2) if item["sale_net"] is not None else None,
                 "sale_share_pct": round(
                     percentage(
                         item["sale"],

@@ -19,7 +19,7 @@ Las semanas cerradas requieren reapertura antes de eliminar cargas.
 La migración automática a esquema 2 agrega `uploads.removed_at` sin modificar
 archivos ni eliminar registros existentes. La eliminación múltiple es atómica y
 verifica que la semana no haya cambiado desde que se abrió la lista.
-Validación actual: 79 tests, incluyendo migración, recarga del mismo Excel,
+Validación actual: 98 tests, incluyendo migración, recarga del mismo Excel,
 cancelación, selección ordenada en UI, recálculo y bloqueo en semanas cerradas.
 
 ## Arquitectura y compatibilidad
@@ -81,7 +81,9 @@ Para backup, cerrar la aplicación y copiar **la carpeta de datos completa**, no
 la base. Esta versión guarda rutas absolutas: mover datos de equipo requiere una
 futura herramienta de relocalización. No compartir esta SQLite como solución multi-PC.
 
-## Esquema SQLite (versión 2)
+## Esquema SQLite (versión 3)
+
+La versión 3 incorpora las tablas de premios y controles descritas en [PREMIOS.md](PREMIOS.md).
 
 | Tabla | Datos y restricciones principales |
 | --- | --- |
@@ -207,8 +209,10 @@ Cerrar exige:
 
 Se guarda un snapshot de cierre con revisión, métricas, atribución de artículos,
 actividad, IDs de versiones y confirmaciones. `administrative_closed=true`, pero
-`final_numbers=false`: falta el futuro motor de conciliación financiera y premios.
-`awards=null` evita presentar premios inventados.
+`final_numbers=false`: todavía no hay conciliación financiera automática.
+`awards` guarda el cálculo de premios y sus controles administrativos. Con reglas
+vigentes, se exige control final válido por vendedor antes de confirmar premios.
+Ver [PREMIOS.md](PREMIOS.md) para configuración, estados y exportación.
 
 Cerrada permite filtrar, ordenar, abrir vendedor/artículo/proveedor, ver snapshots
 y exportar. Las mutaciones también se bloquean en almacenamiento, no solo en botones.
@@ -245,19 +249,19 @@ como una nueva revisión semanal.
 
 ## Validación y pendientes
 
-La suite contempla 79 pruebas: 22 anteriores y 57 semanales. Incluye los
+La suite contempla 98 pruebas: 22 diarias, 57 semanales y 19 de premios e interfaz. Incluye los
 30 casos solicitados y regresiones adicionales de rangos,
 reapertura, persistencia al reiniciar, manipulación de archivos, reasignación y UI.
 Se ejecutó además una carga semanal con copias temporales de los cuatro Excel
 reales del 18/09; sus hashes originales permanecieron iguales. La base de producción
 no se creó ni migró durante esa prueba: se inicializa al abrir la aplicación.
 
-Pendientes: parser financiero de liquidaciones, premios/pagos, sincronización,
+Pendientes: parser financiero de liquidaciones, ejecución de pagos, sincronización,
 relocalización de datos entre equipos, detección normalizada de contenido Excel,
 atribución ambigua de artículos a varias fechas/destinos y automatización de la
 adopción de revisiones diarias antiguas. La UI sigue procesando Excel de forma
 síncrona; archivos grandes pueden pausarla durante la lectura. No hay reescritura
-del stack ni integración de premios prematura.
+del stack; los premios reutilizan las métricas y el almacenamiento existentes.
 
 Las escrituras SQLite se serializan con transacciones. Si falla el índice después
 de copiar un archivo puede quedar una copia huérfana; nunca se utiliza sin una fila

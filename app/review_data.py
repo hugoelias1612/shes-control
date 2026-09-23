@@ -205,6 +205,7 @@ class ArticleLine:
     quantity: float = 0.0
     bonification: float = 0.0
     total: float = 0.0
+    net_total: float | None = None
 
 @dataclass
 class LogicalOrder:
@@ -232,6 +233,7 @@ class LogicalOrder:
 
     original_total: float = 0.0
     valid_total: float = 0.0
+    net_total: float | None = None
 
     alta_date: str = ""
     delivery_date: str = ""
@@ -543,10 +545,16 @@ def build_article_map(
                     code=article_code,
                     name=article_name,
                     provider=normalize_text(provider),
+                    net_total=0.0,
                 )
             )
 
         article = grouped[key][article_key]
+        net = row.get("Importes Netos")
+        if not clean_text(net):
+            article.net_total = None
+        elif article.net_total is not None:
+            article.net_total += safe_float(net)
 
         article.quantity += safe_float(
             row.get(
@@ -673,6 +681,7 @@ def build_logical_orders(
 
                 "original_total": 0.0,
                 "valid_total": 0.0,
+                "net_total": 0.0,
 
                 "alta_values": [],
                 "delivery_values": [],
@@ -752,6 +761,11 @@ def build_logical_orders(
             # Preventa válida:
             # todo lo NO anulado.
             group["valid_total"] += total
+            base = [row.get("NETO GRAVADO"), row.get("NO GRAVADO")]
+            if any(not clean_text(value) for value in base):
+                group["net_total"] = None
+            elif group["net_total"] is not None:
+                group["net_total"] += sum(safe_float(value) for value in base)
 
         if factured:
             group["factured_count"] += 1
@@ -850,6 +864,7 @@ def build_logical_orders(
 
         logical_orders.append(
             LogicalOrder(
+                net_total=group["net_total"],
                 logical_id=group[
                     "logical_id"
                 ],

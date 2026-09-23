@@ -3,7 +3,8 @@
 Sistema de control de ventas de SHES.
 
 Aplicación comercial de escritorio: Python 3.12 + PySide6. La preventa procesada es
-preliminar; no cierra premios ni números finales sin futuras liquidaciones.
+preliminar. Los premios semanales se confirman mediante control administrativo y cierre;
+las liquidaciones adjuntas todavía no se interpretan financieramente.
 
 ## Ejecutar en Windows
 
@@ -38,8 +39,10 @@ Liquidaciones, Premios y Archivos/Auditoría.
 - Revisión semanal reutiliza las tarjetas y reasignaciones anteriores.
 - Cierre exige semana finalizada, preventa completa, revisión actual confirmada y
   liquidaciones confirmadas por jornada. Reapertura auditada conserva cada cierre.
-- Liquidaciones se adjuntan y cuentan; su estructura financiera y los premios aún
-  no se interpretan/calculan. Un cierre administrativo no inventa números netos finales.
+- Liquidaciones se adjuntan y cuentan; su estructura financiera no se interpreta.
+- Premios configurables y acumulativos, adicionales al 3% sobre venta antes de IVA:
+  configuración, progreso, controles manuales, invalidaciones, históricos y Excel.
+  Guía completa en [PREMIOS.md](PREMIOS.md).
 
 Diseño, esquema SQLite, fórmulas, límites y guía manual en [SEMANAS.md](SEMANAS.md).
 

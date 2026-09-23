@@ -10,6 +10,7 @@ from app.review_window import ReviewWindow
 from app.dashboard_window import DashboardWindow, NumericItem, money
 from app.alerts_widget import AlertsWidget
 from app.theme import brand_header
+from app.tables import configure_table, capture_tables, restore_tables
 from app.review_data import normalize_seller
 
 from PySide6.QtCore import Qt, QDate
@@ -36,8 +37,7 @@ def table(headers, rows):
         for col, value in enumerate(values):
             item = NumericItem(value) if isinstance(value, (int, float)) else QTableWidgetItem(str(value))
             widget.setItem(row, col, item)
-    widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-    widget.horizontalHeader().setStretchLastSection(True)
+    configure_table(widget)
     widget.setAlternatingRowColors(True)
     widget.verticalHeader().setVisible(False)
     widget.setSortingEnabled(True)
@@ -132,7 +132,7 @@ class UploadDialog(QDialog):
             update_preview()
             self.controls.append((check, branch, starts, ends, mode, duplicate))
         self.grid.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.grid.resizeColumnsToContents()
+        configure_table(self.grid, sortable=False)
         self.grid.resizeRowsToContents()
         layout.addWidget(self.grid)
         for column in (4, 5, 6):
@@ -195,6 +195,7 @@ class WeeksWindow(QMainWindow):
         self.refresh()
 
     def refresh(self):
+        saved_tables = capture_tables(self)
         for monday in calendar_weeks(self.service.now()):
             self.service.store.ensure_week(monday)
         rows = self.service.store.query("SELECT * FROM weeks ORDER BY start_date DESC")
@@ -211,10 +212,11 @@ class WeeksWindow(QMainWindow):
                       ("Actualizar resultados" if stale else money(data["company"]["sale"])) if data else "Sin procesar",
                       data.get("data_until") or "—", f"{legacy} cargas" if legacy else "—"]
             for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
+                item = NumericItem(data["company"]["sale"], value) if col == 2 and data and not stale else QTableWidgetItem(value)
                 item.setData(Qt.UserRole, week["id"])
                 self.week_table.setItem(index, col, item)
-        self.week_table.setSortingEnabled(True)
+        configure_table(self.week_table)
+        restore_tables(self, saved_tables)
 
     def open_selected(self):
         row = self.week_table.currentRow()
@@ -288,6 +290,8 @@ class WeekControlWindow(QMainWindow):
             return None
 
     def refresh(self):
+        saved_tables = capture_tables(self)
+        selected_tab = self.tabs.currentIndex()
         progress = self.service.progress(self.key)
         self.closed = progress["status"] == "CERRADA"
         self.upload_button.setEnabled(not self.closed)
@@ -348,7 +352,7 @@ class WeekControlWindow(QMainWindow):
             metrics = by_name[sellers.item(row, 0).text()]
             sellers.setItem(row, old_columns, NumericItem(metrics.get("working_days", 0)))
             sellers.setItem(row, old_columns + 1, NumericItem(metrics.get("average_daily_sale", 0), money(metrics.get("average_daily_sale", 0))))
-        sellers.setSortingEnabled(True)
+        configure_table(sellers)
         sellers.sortItems(1, Qt.DescendingOrder)
         self.tabs.addTab(filterable(sellers), "Vendedores")
         articles_table = self.dashboard_support.create_articles_tab()
@@ -369,8 +373,11 @@ class WeekControlWindow(QMainWindow):
             [[r["date"], r["client"], r["source_seller"], r["article"], r["description"], r["quantity"], r["amount"]]
              for r in self.data.get("negative_movements", [])])))
         self.tabs.addTab(separated, "Negativos separados")
-        self.tabs.addTab(QLabel("Premios semanales: integración futura. Se conservarán pagos y cierres originales al reabrir."), "Premios")
+        from app.reward_window import RewardsPanel
+        self.tabs.addTab(RewardsPanel(self.service, self.key, self.data, self), "Premios")
         self.tabs.addTab(self.audit_tab(), "Archivos / Auditoría")
+        self.tabs.setCurrentIndex(max(0, selected_tab))
+        restore_tables(self, saved_tables)
 
     def loads_tab(self, progress):
         widget = QWidget()

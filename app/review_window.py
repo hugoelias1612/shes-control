@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.tables import configure_table
 
 from typing import TYPE_CHECKING
 
@@ -151,6 +152,8 @@ class ArticlesWidget(QFrame):
             )
         )
 
+        from app.dashboard_window import NumericItem
+
         for row_index, article in enumerate(
             order.articles
         ):
@@ -174,31 +177,19 @@ class ArticlesWidget(QFrame):
             table.setItem(
                 row_index,
                 2,
-                QTableWidgetItem(
-                    decimal_number(
-                        article.quantity
-                    )
-                ),
+                NumericItem(article.quantity, decimal_number(article.quantity)),
             )
 
             table.setItem(
                 row_index,
                 3,
-                QTableWidgetItem(
-                    decimal_number(
-                        article.bonification
-                    )
-                ),
+                NumericItem(article.bonification, decimal_number(article.bonification)),
             )
 
             table.setItem(
                 row_index,
                 4,
-                QTableWidgetItem(
-                    money(
-                        article.total
-                    )
-                ),
+                NumericItem(article.total, money(article.total)),
             )
 
         table.verticalHeader().setVisible(
@@ -209,31 +200,12 @@ class ArticlesWidget(QFrame):
             QTableWidget.NoEditTriggers
         )
 
-        table.horizontalHeader().setSectionResizeMode(
-            1,
-            QHeaderView.Stretch,
-        )
 
-        table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.ResizeToContents,
-        )
 
-        table.horizontalHeader().setSectionResizeMode(
-            2,
-            QHeaderView.ResizeToContents,
-        )
 
-        table.horizontalHeader().setSectionResizeMode(
-            3,
-            QHeaderView.ResizeToContents,
-        )
 
-        table.horizontalHeader().setSectionResizeMode(
-            4,
-            QHeaderView.ResizeToContents,
-        )
 
+        configure_table(table)
         table.setMinimumHeight(
             min(
                 260,

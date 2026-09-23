@@ -77,6 +77,8 @@ class WeekStore:
         self.db_path = self.root / "shes_index.sqlite3"
         with self.connect() as db:
             db.executescript(SCHEMA)
+            from app.rewards import SCHEMA as REWARD_SCHEMA
+            db.executescript(REWARD_SCHEMA)
             db.execute("BEGIN IMMEDIATE")
             if "removed_at" not in {row["name"] for row in db.execute("PRAGMA table_info(uploads)")}:
                 db.execute("ALTER TABLE uploads ADD COLUMN removed_at TEXT")
@@ -313,6 +315,9 @@ class WeekStore:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             week = self.assert_open(db, key, data["source_revision"])
+            awards = data.get("awards")
+            if awards and awards["revision"] != db.execute("SELECT revision FROM reward_meta WHERE id=1").fetchone()[0]:
+                raise ValueError("Los premios cambiaron durante el cálculo; actualizá antes de guardar")
             path = self.folder(key) / "procesado" / f"{kind}_{uuid4().hex}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             write_json(path, data)
@@ -320,6 +325,9 @@ class WeekStore:
                        (key, kind, week["revision"], str(path), file_hash(path), timestamp()))
             if close:
                 db.execute("UPDATE weeks SET status='CERRADA',closed_at=? WHERE id=?", (timestamp(), key))
+            if awards:
+                from app.rewards import write_results
+                write_results(db,key,awards)
             self.audit(db, key, "cierre_semana" if close else "procesar_semana", {"snapshot": str(path)})
         return path
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.tables import configure_table
 
 from app.alerts_widget import AlertsWidget
 
@@ -590,11 +591,8 @@ class SellerDetailDialog(QDialog):
             True
         )
 
-        table.horizontalHeader().setSectionResizeMode(
-            1,
-            QHeaderView.Stretch,
-        )
 
+        configure_table(table)
         return table
 
     def providers_table(
@@ -718,11 +716,8 @@ class SellerDetailDialog(QDialog):
             True
         )
 
-        table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.Stretch,
-        )
 
+        configure_table(table)
         return table
 
 
@@ -1188,10 +1183,6 @@ class DashboardWindow(QMainWindow):
             True
         )
 
-        table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.Stretch,
-        )
 
         table.cellDoubleClicked.connect(
             lambda row, _:
@@ -1203,6 +1194,7 @@ class DashboardWindow(QMainWindow):
             )
         )
 
+        configure_table(table)
         return table
 
     def open_seller(
@@ -1351,11 +1343,8 @@ class DashboardWindow(QMainWindow):
             True
         )
 
-        table.horizontalHeader().setSectionResizeMode(
-            1,
-            QHeaderView.Stretch,
-        )
 
+        configure_table(table)
         return table
 
     # ========================================================
@@ -1479,9 +1468,6 @@ class DashboardWindow(QMainWindow):
             True
         )
 
-        table.horizontalHeader().setSectionResizeMode(
-            0,
-            QHeaderView.Stretch,
-        )
 
+        configure_table(table)
         return table
