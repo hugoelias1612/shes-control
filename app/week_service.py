@@ -130,9 +130,9 @@ class WeekService:
             if upload["type"] != "puntos":
                 continue
             branch = upload["branch"]
-            df = load_points_file(upload["file_path"])
+            df = self.store.parsed_upload(upload, load_points_file)
             dates = parse_date_series(df["dia"])
-            for index, row in df.iterrows():
+            for index, row in zip(df.index, df.to_dict("records")):
                 if pd.isna(dates.loc[index]):
                     continue
                 day = delivery_for_presale(dates.loc[index]).isoformat()
@@ -154,7 +154,7 @@ class WeekService:
         if physical_uploads:
             frames = []
             for upload in physical_uploads:
-                frame = load_orders_file(upload["file_path"])
+                frame = self.store.parsed_upload(upload, load_orders_file)
                 frame = frame[frame["NÚMERO PEDIDO"].notna()].copy()
                 frame["_number"] = frame["NÚMERO PEDIDO"].map(lambda v: clean_text(v).removesuffix(".0"))
                 if frame["_number"].duplicated().any():
@@ -221,13 +221,16 @@ class WeekService:
         upload = next((u for u in self.store.uploads(key, active=True) if u["type"] == "porcliente"), None)
         if not upload:
             return [], [], ["PorCliente pendiente: venta disponible, artículos/proveedores todavía incompletos."]
-        frame = load_porcliente_file(upload["file_path"])
+        frame = self.store.parsed_upload(upload, load_porcliente_file)
         frame = frame[frame["Cod. Cliente"].notna() & frame["Código"].notna()].copy()
         from app.returns import reconcile
         week = self.store.week(key)
         carriers, rows, warnings = reconcile(frame, session, week, self.store.returns(key))
         self.store.sync_returns(key, rows)
-        carriers, rows, warnings = reconcile(frame, session, week, self.store.returns(key))
+        saved = self.store.returns(key)
+        decisions = {r["fingerprint"]: (r["decision"], r["note"]) for r in saved}
+        if any(decisions[r["fingerprint"]] != (r["decision"], r["note"]) for r in rows):
+            carriers, rows, warnings = reconcile(frame, session, week, saved)
         pending = sum(r["decision"] == "PENDIENTE" for r in rows)
         if pending:
             warnings.append(f"Hay {pending} devoluciones pendientes de aprobar/rechazar.")

@@ -39,13 +39,19 @@ def reconcile(frame, session, week, saved=()):
     frame["_net"] = frame["Importes Netos"].map(safe_float)
     frame["_qty"] = frame["Cantidades Totales"].map(safe_float)
     orders = [o for o in session.orders if not o.fully_annulled]
+    order_index = defaultdict(list)
+    seller_index = defaultdict(list)
+    for order in orders:
+        order_index[(order.client_code, order.preventa_day)].append(order)
+        if order.assigned_seller != "SIN ASIGNAR":
+            seller_index[(order.client_code, order.original_seller)].append(order)
     positives, warnings = [], []
     carriers = {}
 
     def destinations(client, day):
-        return [o for o in orders if o.client_code == client and o.preventa_day == day]
+        return order_index.get((client, day), ())
 
-    for _, raw in frame.loc[frame["_net"] > 0].iterrows():
+    for raw in frame.loc[frame["_net"] > 0].to_dict("records"):
         if pd.isna(raw["_date"]):
             continue
         day, client = plain_date(raw["_date"]).isoformat(), code(raw.get("Cod. Cliente"))
@@ -83,7 +89,7 @@ def reconcile(frame, session, week, saved=()):
     saved_by_fp = {r["fingerprint"]: r for r in saved}
     occurrences, movements = defaultdict(int), []
     negatives = frame.loc[frame["_net"] < 0].sort_values("_date", kind="stable")
-    for _, raw in negatives.iterrows():
+    for raw in negatives.to_dict("records"):
         if pd.isna(raw["_date"]):
             continue
         day = plain_date(raw["_date"]).isoformat()
@@ -110,8 +116,7 @@ def reconcile(frame, session, week, saved=()):
         impact = automatic + (excess if decision == "APROBADA" else 0.0)
         assigned = match["assigned_seller"] if match else ""
         if not assigned and not outside:
-            possible = [o for o in orders if o.client_code == base["client"] and
-                        o.original_seller == base["source_seller"] and o.assigned_seller != "SIN ASIGNAR"]
+            possible = seller_index.get((base["client"], base["source_seller"]), ())
             if possible:
                 assigned = min(possible, key=lambda o: abs((date.fromisoformat(o.preventa_day) - plain_date(raw["_date"])).days)).assigned_seller
             else:

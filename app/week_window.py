@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+from app.background import run_data
 from app.week_calendar import BRANCHES, as_date, calendar_weeks
 from app.week_imports import inspect_batch
 from app.week_service import WeekService
@@ -65,7 +66,7 @@ class UploadDialog(QDialog):
     def __init__(self, service, key, paths, parent=None):
         super().__init__(parent)
         self.service, self.key = service, key
-        self.candidates = inspect_batch(paths)
+        self.candidates = run_data(self, lambda: inspect_batch(paths), "Leyendo los Excel…")
         self.revision = service.store.week(key)["revision"]
         week = service.store.week(key)
         self.setWindowTitle("Revisar archivos antes de guardar")
@@ -156,7 +157,7 @@ class UploadDialog(QDialog):
             QMessageBox.warning(self, "Sin archivos", "Seleccioná al menos un archivo válido")
             return
         try:
-            results = self.service.store.commit_uploads(self.key, selected, self.revision)
+            results = run_data(self, lambda: self.service.store.commit_uploads(self.key, selected, self.revision), "Guardando cargas…")
         except Exception as error:
             QMessageBox.warning(self, "Revisar carga", str(error))
             return
@@ -298,7 +299,7 @@ class WeekControlWindow(QMainWindow):
         self.review_button.setEnabled(not self.closed)
         self.close_button.setText("REABRIR SEMANA" if self.closed else "CERRAR SEMANA")
         try:
-            self.data = self.service.metrics(self.key)
+            self.data = run_data(self, lambda: self.service.metrics(self.key), "Calculando la semana…")
         except Exception as error:
             self.review_button.setEnabled(False)
             self.title.setText(f"Semana {self.key}: revisar archivos antes de calcular")
@@ -323,7 +324,7 @@ class WeekControlWindow(QMainWindow):
             widget.deleteLater()
         if self.dashboard_support:
             self.dashboard_support.deleteLater()
-        self.dashboard_support = DashboardWindow(self.data)
+        self.dashboard_support = DashboardWindow(self.data, build_tabs=False)
         summary = QWidget()
         layout = QVBoxLayout(summary)
         company = self.data["company"]
@@ -632,17 +633,17 @@ class WeekControlWindow(QMainWindow):
 
     def review(self):
         def show():
-            session, _, _, revision = self.service.build_session(self.key)
+            session, _, _, revision = run_data(self, lambda: self.service.build_session(self.key))
             state = {"revision": revision}
             def save(value):
-                result = self.service.confirm_review(self.key, value, state["revision"])
+                result = run_data(self, lambda: self.service.confirm_review(self.key, value, state["revision"]))
                 state["revision"] = self.service.store.week(self.key)["revision"]
                 self.refresh()
                 return result
             def process(_):
                 if self.service.store.week(self.key)["revision"] != state["revision"]:
                     raise ValueError("La semana cambió; revisá las nuevas versiones")
-                data = self.service.process(self.key)
+                data = run_data(self, lambda: self.service.process(self.key))
                 self.refresh()
                 return data
             window = ReviewWindow(session, save_callback=save, process_callback=process)
@@ -651,14 +652,14 @@ class WeekControlWindow(QMainWindow):
         self.guarded(show)
 
     def dashboard(self):
-        data = self.guarded(lambda: self.service.metrics(self.key))
+        data = self.guarded(lambda: run_data(self, lambda: self.service.metrics(self.key)))
         if data is not None:
             window = DashboardWindow(data)
             self.child_windows.append(window)
             window.show()
 
     def recalculate(self):
-        self.guarded(lambda: self.service.process(self.key))
+        self.guarded(lambda: run_data(self, lambda: self.service.process(self.key)))
         self.refresh()
 
     def missing(self):
@@ -674,7 +675,7 @@ class WeekControlWindow(QMainWindow):
     def export(self):
         path, _ = QFileDialog.getSaveFileName(self, "Exportar métricas", f"{self.key}.json", "JSON (*.json)")
         if path:
-            self.guarded(lambda: self.service.export(self.key, path))
+            self.guarded(lambda: run_data(self, lambda: self.service.export(self.key, path)))
 
     def close_or_reopen(self):
         if self.closed:
@@ -688,5 +689,5 @@ class WeekControlWindow(QMainWindow):
                 reason, ok = QInputDialog.getText(self, "Cierre excepcional", "La semana todavía no terminó. Motivo obligatorio:")
                 if not ok or not reason.strip():
                     return
-            self.guarded(lambda: self.service.close(self.key, reason))
+            self.guarded(lambda: run_data(self, lambda: self.service.close(self.key, reason)))
         self.refresh()

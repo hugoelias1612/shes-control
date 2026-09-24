@@ -1,4 +1,5 @@
 """Configuración, control semanal e historial de premios dentro de la pestaña existente."""
+from app.background import run_data
 import json
 from pathlib import Path
 
@@ -152,7 +153,7 @@ class RewardDetail(QDialog):
                 while item.layout().count():
                     child=item.layout().takeAt(0)
                     if child.widget():child.widget().deleteLater()
-        data = self.snapshot if self.snapshot is not None else self.panel.engine.calculate(self.panel.key)
+        data = self.snapshot if self.snapshot is not None else run_data(self, lambda: self.panel.engine.calculate(self.panel.key))
         self.current = next(s for s in data["sellers"] if s["seller"]==self.seller)
         table,filterable,_=widgets()
         self.layout_box.addWidget(QLabel(f"{self.seller} · {data['week_id']}\nComisión base 3%: {display(self.current['base_commission'],'money')}   "
@@ -289,7 +290,7 @@ class RewardsPanel(QWidget):
 
     def refresh(self,initial=False):
         saved=capture_tables(self);index=self.tabs.currentIndex()
-        if not initial:self.metrics=self.engine.service.metrics(self.key)
+        if not initial:self.metrics=run_data(self, lambda: self.engine.service.metrics(self.key))
         self.data=self.engine.calculate(self.key,self.metrics)
         while self.tabs.count():
             page=self.tabs.widget(0);self.tabs.removeTab(0);page.deleteLater()

@@ -730,6 +730,7 @@ class DashboardWindow(QMainWindow):
     def __init__(
         self,
         data,
+        build_tabs=True,
     ):
         super().__init__()
 
@@ -801,6 +802,9 @@ class DashboardWindow(QMainWindow):
 
         if data.get("warnings"):
             layout.addWidget(AlertsWidget(data["warnings"]))
+
+        if not build_tabs:
+            return
 
         tabs = QTabWidget()
 

@@ -14,6 +14,9 @@ from app.week_calendar import BRANCHES, as_date, week_bounds, week_days, week_id
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS parsed_excel_cache(
+ hash TEXT NOT NULL, parser TEXT NOT NULL, payload TEXT NOT NULL,
+ PRIMARY KEY(hash,parser));
 INSERT OR IGNORE INTO schema_version VALUES(1);
 CREATE TABLE IF NOT EXISTS weeks(
  id TEXT PRIMARY KEY, start_date TEXT UNIQUE NOT NULL, end_date TEXT NOT NULL,
@@ -161,6 +164,25 @@ class WeekStore:
         return self.query("SELECT * FROM uploads WHERE week_id=?" +
                           (" AND active=1" if active else "") + " ORDER BY id", (key,))
 
+    def parsed_upload(self, upload, loader):
+        """Disposable cache in the existing SQLite; source hashes are checked by service."""
+        from io import StringIO
+        import pandas as pd
+        parser = upload["type"] + ":1"
+        cached = self.query("SELECT payload FROM parsed_excel_cache WHERE hash=? AND parser=?",
+                            (upload["hash"], parser))
+        if cached:
+            try:
+                return pd.read_json(StringIO(cached[0]["payload"]), orient="table", precise_float=True)
+            except (ValueError, TypeError, KeyError):
+                pass  # Rebuild a damaged cache from the original workbook.
+        frame = loader(upload["file_path"])
+        payload = frame.to_json(orient="table", date_format="iso", date_unit="ns", double_precision=15)
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO parsed_excel_cache VALUES(?,?,?)",
+                       (upload["hash"], parser, payload))
+        return frame
+
     def duplicate(self, digest, key=None):
         rows = self.query("SELECT * FROM uploads WHERE hash=? AND active=1 AND removed_at IS NULL" +
                           (" AND week_id=?" if key else "") + " LIMIT 1", (digest, key) if key else (digest,))
@@ -300,9 +322,9 @@ class WeekStore:
             db.execute("BEGIN IMMEDIATE")
             self.assert_open(db, key)
             now = timestamp()
+            existing = {r["fingerprint"] for r in db.execute(
+                "SELECT fingerprint FROM return_adjustments WHERE week_id=?", (key,))}
             for row in rows:
-                prior = db.execute("SELECT decision FROM return_adjustments WHERE week_id=? AND fingerprint=?",
-                                   (key, row["fingerprint"])).fetchone()
                 automatic = "AUTOMATICA" if row["matched"] and not row.get("excess") else (
                     "IGNORADA" if row.get("outside_unmatched") else "PENDIENTE")
                 db.execute("""INSERT INTO return_adjustments(week_id,fingerprint,payload,decision,created_at,updated_at)
@@ -313,7 +335,7 @@ class WeekStore:
                                   THEN return_adjustments.decision ELSE excluded.decision END,
                     updated_at=excluded.updated_at""",
                     (key, row["fingerprint"], json.dumps(row, ensure_ascii=False), automatic, now, now))
-                if prior is None:
+                if row["fingerprint"] not in existing:
                     self.audit(db, key, "devolucion_detectada", {"fingerprint": row["fingerprint"],
                                "resultado": automatic, "matched": row["matched"]})
                     self.audit(db, key, "devolucion_match" if row["matched"] else "devolucion_sin_match",
