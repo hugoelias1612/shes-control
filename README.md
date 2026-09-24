@@ -4,7 +4,7 @@ Sistema de control de ventas de SHES.
 
 Aplicación comercial de escritorio: Python 3.12 + PySide6. La preventa procesada es
 preliminar. Los premios semanales se confirman mediante control administrativo y cierre;
-las liquidaciones adjuntas todavía no se interpretan financieramente.
+PorCliente aporta las ventas positivas y devoluciones que forman la venta neta.
 
 ## Ejecutar en Windows
 
@@ -22,24 +22,25 @@ SQLAlchemy sigue instalado para una futura migración; todavía no hay sincroniz
 
 Al ejecutar `main.py` se abre el selector de semanas, sin pedir archivos. Elegir
 una semana abre el centro con Resumen, Cargas, Vendedores, Artículos, Proveedores,
-Liquidaciones, Premios y Archivos/Auditoría.
+Devoluciones, Premios y Archivos/Auditoría.
 
 - Semana de lunes a domingo, determinada por **FECHA ENTREGA** del pedido.
 - Subida múltiple con vista previa y selección obligatoria de sucursal para Puntos.
 - Un archivo idéntico ya activo en la misma semana se ignora y muestra la carga coincidente.
 - Pedidos admite varias partes de CHESS: se combinan por número; la última carga actualiza los repetidos.
-- PorCliente es un único reporte por semana: la última carga reemplaza al anterior y se cruza por cliente y fecha de entrega, usando el vendedor final del pedido. Negativos separados sin descontar preventa.
+- PorCliente es un único reporte activo y puede abarcar fechas posteriores. Los positivos
+  solo entran si se asocian a pedidos entregados en la semana; los negativos compatibles
+  descuentan como devoluciones, incluso si fueron registrados después del domingo.
 - SIGO admite un semanal por sucursal y separa cada fecha: sábado anterior → lunes de reparto, lunes → martes, hasta viernes → sábado.
 - Exclusiones predeterminadas editables en la interfaz y guardadas en SQLite; las revisiones confirmadas conservan sus decisiones.
 - Se elige la semana, sin preguntar rangos comerciales. Eliminar una parte recalcula los pedidos restantes;
   se conservan originales y auditoría, y se puede volver a cargar un archivo histórico o eliminado.
 - No trabajado por sucursal con motivo opcional y reversión. Domingo nunca pide SIGO.
-- Análisis parcial disponible sin liquidaciones ni cierre. Rangos de ventas,
+- Análisis parcial disponible antes del cierre. Rangos de ventas,
   artículos y preventa documental completa se muestran separadamente.
 - Revisión semanal reutiliza las tarjetas y reasignaciones anteriores.
-- Cierre exige semana finalizada, preventa completa, revisión actual confirmada y
-  liquidaciones confirmadas por jornada. Reapertura auditada conserva cada cierre.
-- Liquidaciones se adjuntan y cuentan; su estructura financiera no se interpreta.
+- Cierre exige semana finalizada, preventa completa, revisión actual confirmada,
+  devoluciones sin match resueltas y control de premios cuando corresponda.
 - Premios configurables y acumulativos, adicionales al 3% sobre venta antes de IVA:
   configuración, progreso, controles manuales, invalidaciones, históricos y Excel.
   Guía completa en [PREMIOS.md](PREMIOS.md).

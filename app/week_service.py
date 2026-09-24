@@ -10,9 +10,9 @@ import pandas as pd
 
 from app.importers import parse_date_series
 from app.processor import aggregate_articles, aggregate_providers, percentage, client_code
-from app.review_data import (ReviewSession, build_logical_orders, build_article_map,
+from app.review_data import (ReviewSession, build_logical_orders,
     load_points_file, load_orders_file, load_porcliente_file, normalize_seller,
-    clean_text, is_yes, review_snapshot, parse_client, format_date, safe_float)
+    clean_text, is_yes, review_snapshot, parse_client, format_date)
 from app.week_calendar import BRANCHES, DAY_NAMES, as_date, week_days, delivery_for_presale, presale_for_delivery
 from app.week_store import WeekStore, file_hash, timestamp
 from app.storage import write_json
@@ -23,6 +23,7 @@ class WeekService:
         self.store = store or WeekStore()
         self.today = today  # Inyectable en tests; en producción se consulta al refrescar.
         self._cache = {}
+        self._return_cache = {}
 
     def now(self):
         return self.today or date.today()
@@ -38,7 +39,6 @@ class WeekService:
                 for d in metadata.get("presale_dates", [u["detected_start_date"]]):
                     point_days.add((delivery_for_presale(d).isoformat(), u["branch"]))
         work = {(w["date"], w["branch"]): w for w in self.store.workdays(key)}
-        liquidations = {x["date"]: x for x in self.store.liquidations(key)}
         days = []
         for day in week_days(week["start_date"]):
             iso = day.isoformat()
@@ -61,13 +61,14 @@ class WeekService:
                 if state == "PENDIENTE":
                     missing.append(f"Puntos {branch}")
             not_worked = not sunday and all(not work[(iso, b)]["worked"] for b in BRANCHES)
-            reports = {kind: any(u["type"] == kind and u["coverage_start"] <= iso <= u["coverage_end"] for u in uploads)
-                       for kind in ("pedidos", "porcliente")}
+            reports = {
+                "pedidos": any(u["type"] == "pedidos" and u["coverage_start"] <= iso <= u["coverage_end"] for u in uploads),
+                "porcliente": any(u["type"] == "porcliente" for u in uploads),
+            }
             if not not_worked:
                 missing.extend(kind for kind, present in reports.items() if not present and day < self.now())
             points_ready = sunday or all(branches[b] in {"CARGADO", "NO SE TRABAJÓ"} for b in BRANCHES)
             commercial = not_worked or (points_ready and all(reports.values()))
-            liq = liquidations[iso]
             if not_worked:
                 state = "NO_TRABAJADA"
             elif day > self.now():
@@ -76,24 +77,21 @@ class WeekService:
                 state = "EN_CURSO"
             elif not commercial:
                 state = "PREVENTA_PENDIENTE"
-            elif liq["confirmed_complete"]:
-                state = "LIQUIDADA"
             else:
                 state = "PREVENTA_COMPLETA"
             days.append({"date": iso, "name": DAY_NAMES[day.weekday()], "sunday": sunday,
                          "presale_date": None if sunday else presale_for_delivery(day).isoformat(),
                          "branches": branches, "reports": reports, "commercial_complete": commercial,
                          "state": state, "missing": missing, "no_work": not_worked,
-                         "liquidations": liq, "reasons": {b: work[(iso, b)]["reason"] for b in BRANCHES}})
-        commercial_complete = all(d["commercial_complete"] for d in days) and self.now().isoformat() > week["end_date"]
-        required = [d for d in days if not d["no_work"]]
-        liquidated = all(d["liquidations"]["confirmed_complete"] for d in required)
+                         "reasons": {b: work[(iso, b)]["reason"] for b in BRANCHES}})
+        documentation_complete = all(d["commercial_complete"] for d in days)
+        commercial_complete = documentation_complete and self.now().isoformat() > week["end_date"]
         status = week["status"]
         if status not in {"CERRADA", "REABIERTA"}:
-            status = "LIQUIDACIONES_PENDIENTES" if commercial_complete and not liquidated else (
-                "PREVENTA_COMPLETA" if commercial_complete else "EN_CURSO")
+            status = "LISTA_PARA_CERRAR" if commercial_complete else "EN_CURSO"
         return {"week": week, "days": days, "status": status, "commercial_complete": commercial_complete,
-                "liquidations_complete": liquidated}
+                "documentation_complete": documentation_complete,
+                "returns_pending": sum(r["decision"] == "PENDIENTE" for r in self.store.returns(key))}
 
     def missing_explanation(self, key):
         progress = self.progress(key)
@@ -109,13 +107,9 @@ class WeekService:
             for branch, reason in day["reasons"].items():
                 if day["branches"][branch] == "NO SE TRABAJÓ":
                     lines.append(f"{branch}: no se trabajó" + (f" ({reason})" if reason else ""))
-            liq = day["liquidations"]
-            lines.append(f"Liquidaciones cargadas: {liq['count_uploaded']}. Completas: " +
-                         ("confirmado" if liq["confirmed_complete"] else "sin confirmar"))
         lines.append("\nCierre comercial: " + ("completo" if progress["commercial_complete"] else
                      "pendiente de datos y/o jornadas aún no finalizadas"))
-        lines.append("Cierre administrativo: " + ("liquidaciones confirmadas" if progress["liquidations_complete"] else
-                     "falta confirmar las liquidaciones de las jornadas aplicables"))
+        lines.append(f"Devoluciones sin match pendientes: {progress['returns_pending']}")
         return "\n".join(lines)
 
     def build_session(self, key):
@@ -213,7 +207,8 @@ class WeekService:
         session = ReviewSession(self.store.folder(key), sorted(sellers), orders, excluded,
                                 f"{week['start_date']} – {week['end_date']}", warnings, excluded_orders)
         # Adjunta únicamente las líneas atribuibles a una jornada. El resto se calcula una vez a nivel semanal.
-        article_orders, article_warnings = self.article_orders(key, session)
+        article_orders, return_rows, article_warnings = self.article_orders(key, session)
+        self._return_cache[(key, week["revision"])] = deepcopy(return_rows)
         session.warnings.extend(article_warnings)
         exact_articles = {o.logical_id: o.articles for o in article_orders if not o.logical_id.startswith("weekly:")}
         for order in session.orders:
@@ -225,52 +220,18 @@ class WeekService:
     def article_orders(self, key, session):
         upload = next((u for u in self.store.uploads(key, active=True) if u["type"] == "porcliente"), None)
         if not upload:
-            return [], ["PorCliente pendiente: venta disponible, artículos/proveedores todavía incompletos."]
+            return [], [], ["PorCliente pendiente: venta disponible, artículos/proveedores todavía incompletos."]
         frame = load_porcliente_file(upload["file_path"])
         frame = frame[frame["Cod. Cliente"].notna() & frame["Código"].notna()].copy()
-        warnings = []
-        negative = frame["Importes Finales"].map(safe_float).lt(0) | frame["Cantidades Totales"].map(safe_float).lt(0)
-        if negative.any():
-            warnings.append(f"PorCliente: {int(negative.sum())} líneas negativas separadas; importe {frame.loc[negative, 'Importes Finales'].map(safe_float).sum():.2f}. No descuentan preventa ni artículos vendidos.")
-        frame = frame.loc[~negative].copy()
-        frame["Descripción Vendedor"] = "CRUCE POR CLIENTE"
-        dates = parse_date_series(frame["Descripción Período"])
-        if dates.isna().any():
-            warnings.append(f"{int(dates.isna().sum())} líneas PorCliente con fecha inválida no atribuidas.")
-        groups = [(day, frame.loc[dates.eq(day)]) for day in sorted(set(dates.dropna()))]
-        carriers = []
-        eligible = [o for o in session.orders if not o.fully_annulled and
-                    upload["coverage_start"] <= o.preventa_day <= upload["coverage_end"]]
-        for period, rows in groups:
-            for (client, seller), articles in build_article_map(rows).items():
-                matching = [o for o in eligible if o.client_code == client]
-                matching = [o for o in matching if o.preventa_day == period.isoformat()]
-                if not matching:
-                    warnings.append(f"Artículos sin pedido válido asociado: cliente {client}, vendedor {seller}, período {period or 'acumulado'}.")
-                    continue
-                destinations = {o.assigned_seller for o in matching}
-                if len(destinations) != 1 or "SIN ASIGNAR" in destinations:
-                    warnings.append(f"Artículos pendientes de atribución: cliente {client} con varias jornadas y distintos vendedores finales.")
-                    continue
-                carrier = deepcopy(matching[0])
-                carrier.articles = articles
-                if len(matching) > 1:
-                    carrier.logical_id = f"weekly:{client}:{seller}:{period}"
-                    carrier.valid_total = sum(o.valid_total for o in matching)
-                    warnings.append(f"Cliente {client}: artículos contabilizados una sola vez en la semana; sin reparto inventado entre jornadas.")
-                carriers.append(carrier)
-        # Varios períodos de entrega pueden corresponder al mismo pedido lógico.
-        merged = {}
-        for carrier in carriers:
-            if carrier.logical_id in merged:
-                merged[carrier.logical_id].articles.extend(carrier.articles)
-            else:
-                merged[carrier.logical_id] = carrier
-        for carrier in merged.values():
-            difference = round(sum(a.total for a in carrier.articles) - carrier.valid_total, 2)
-            if abs(difference) > 0.02:
-                warnings.append(f"Diferencia PorCliente/pedidos: {carrier.client_code}, {carrier.original_seller}: {difference:+.2f}. Revisar importes.")
-        return list(merged.values()), warnings
+        from app.returns import reconcile
+        week = self.store.week(key)
+        carriers, rows, warnings = reconcile(frame, session, week, self.store.returns(key))
+        self.store.sync_returns(key, rows)
+        carriers, rows, warnings = reconcile(frame, session, week, self.store.returns(key))
+        pending = sum(r["decision"] == "PENDIENTE" for r in rows)
+        if pending:
+            warnings.append(f"Hay {pending} devoluciones pendientes de aprobar/rechazar.")
+        return carriers, rows, warnings
 
     def confirm_review(self, key, session, revision):
         if any(o.assigned_seller not in session.sellers or o.assigned_seller == "SIN ASIGNAR"
@@ -292,19 +253,33 @@ class WeekService:
                 raise ValueError("El snapshot de cierre fue alterado")
             return json.loads(Path(closed["file_path"]).read_text(encoding="utf-8"))
         session, activity, carriers, revision = self.build_session(key)
+        return_rows = deepcopy(self._return_cache.get((key, revision), []))
         progress = self.progress(key)
         included = [s for s in session.sellers if s not in session.excluded_sellers and s != "SIN ASIGNAR"]
         orders = [o for o in session.orders if not o.fully_annulled and o.assigned_seller in included]
         article_orders = [o for o in carriers if o.assigned_seller in included]
-        total = sum(o.valid_total for o in orders)
         active_types = {u["type"] for u in self.store.uploads(key, active=True)}
         completed_days = {d["date"] for d in progress["days"] if d["commercial_complete"]
                           and not d["no_work"] and not d["sunday"] and as_date(d["date"]) < self.now()}
 
         def summarize(selected, article_selected, selected_sellers):
             sale = sum(o.valid_total for o in selected)
-            sale_net = None if any(o.net_total is None for o in selected) else round(sum(o.net_total for o in selected), 2)
-            buyers = {o.client_code for o in selected}
+            article_net = defaultdict(float)
+            article_day_net = defaultdict(float)
+            for order in article_selected:
+                for article in order.articles:
+                    value = article.net_total if article.net_total is not None else article.total
+                    article_net[order.client_code] += value
+                    article_day_net[(order.preventa_day, order.client_code)] += value
+            has_porcliente = "porcliente" in active_types
+            buyers = ({client for client, value in article_net.items() if value > .005} if has_porcliente
+                      else {o.client_code for o in selected})
+            sale_net = round(sum(article_net.values()), 2) if has_porcliente else (
+                None if any(o.net_total is None for o in selected) else round(sum(o.net_total for o in selected), 2))
+            sale_gross = round(sum((a.net_total if a.net_total is not None else a.total)
+                for o in article_selected for a in o.articles if (a.net_total if a.net_total is not None else a.total) > 0), 2) if has_porcliente else sale_net
+            returns_total = round(abs(sum((a.net_total if a.net_total is not None else a.total)
+                for o in article_selected for a in o.articles if (a.net_total if a.net_total is not None else a.total) < 0)), 2) if has_porcliente else 0
             assigned, visited, working_dates = set(), set(), set()
             operational_buyers = set()
             for seller in selected_sellers:
@@ -312,13 +287,13 @@ class WeekService:
                 assigned.update(act["assigned"])
                 visited.update(act["visited"])
                 working_dates.update(act["days"] & completed_days)
-                operational_buyers.update((o.preventa_day, o.client_code) for o in selected
-                    if o.assigned_seller == seller and o.preventa_day in act["days"])
+                operational_buyers.update(act["visited"] & {pair for pair, value in article_day_net.items() if value > .005})
             articles = aggregate_articles(article_selected, len(buyers), sale)
             providers = aggregate_providers(articles, sale, len(buyers))
-            mix_pairs = {(o.client_code, a.code) for o in article_selected for a in o.articles}
-            operational_sale = sum(o.valid_total for o in selected if o.preventa_day in working_dates)
-            return {"sale": round(sale, 2), "sale_net": sale_net,
+            mix_pairs = {(client, a["code"]) for a in articles for client in a.get("client_codes", [])}
+            operational_sale = (sum(value for (day, _), value in article_day_net.items() if day in working_dates)
+                                if has_porcliente else sum(o.valid_total for o in selected if o.preventa_day in working_dates))
+            return {"sale": round(sale, 2), "sale_gross": sale_gross, "returns": returns_total, "sale_net": sale_net,
                     "average_ticket_net": round(sale_net / len(buyers), 2) if buyers and sale_net is not None else None,
                     "reward_availability": {"orders": "pedidos" in active_types, "articles": "porcliente" in active_types,
                                             "sigo": bool(assigned)}, "buyers": len(buyers), "assigned_clients": len(assigned),
@@ -337,8 +312,11 @@ class WeekService:
         for seller in included:
             values = summarize([o for o in orders if o.assigned_seller == seller],
                                [o for o in article_orders if o.assigned_seller == seller], [seller])
-            values.update(seller=seller, company_share_pct=round(percentage(values["sale"], total), 2))
+            values.update(seller=seller, company_share_pct=0)
             sellers.append(values)
+        net_total_for_share = sum(s["sale_net"] or 0 for s in sellers)
+        for values in sellers:
+            values["company_share_pct"] = round(percentage(values["sale_net"] or 0, net_total_for_share), 2)
         company = summarize(orders, article_orders, included)
         articles, providers = company.pop("articles"), company.pop("providers")
         company.update(included_sellers=len(included), excluded_sellers=len(session.excluded_sellers),
@@ -346,18 +324,6 @@ class WeekService:
         active = self.store.uploads(key, active=True)
         pedidos = max((u for u in active if u["type"] == "pedidos"), key=lambda u: u["coverage_end"], default=None)
         porcliente = next((u for u in active if u["type"] == "porcliente"), None)
-        negative_movements = []
-        if porcliente:
-            detail = load_porcliente_file(porcliente["file_path"])
-            for _, r in detail.iterrows():
-                if not clean_text(r.get("Código")):
-                    continue
-                amount, quantity = safe_float(r["Importes Finales"]), safe_float(r["Cantidades Totales"])
-                if amount < 0 or quantity < 0:
-                    negative_movements.append({"date": format_date(r["Descripción Período"]),
-                        "client": client_code(r["Cod. Cliente"]), "source_seller": normalize_seller(r["Descripción Vendedor"]),
-                        "article": clean_text(r["Código"]), "description": clean_text(r["Descripción.2"]),
-                        "quantity": quantity, "amount": amount})
         data_until = min(pedidos["coverage_end"], self.now().isoformat()) if pedidos and pedidos["coverage_start"] <= self.now().isoformat() else None
         articles_until = min(porcliente["coverage_end"], self.now().isoformat()) if porcliente and porcliente["coverage_start"] <= self.now().isoformat() else None
         complete_until = None
@@ -366,14 +332,14 @@ class WeekService:
                 break
             complete_until = d["date"]
         sunday_orders = [o for o in orders if as_date(o.preventa_day).weekday() == 6]
-        result = {"schema_version": 2, "week_id": key, "preventa_date": session.preventa_date,
-                  "status": progress["status"], "final_numbers": False, "liquidations_required": True,
+        result = {"schema_version": 4, "week_id": key, "preventa_date": session.preventa_date,
+                  "status": progress["status"], "final_numbers": False,
                   "processed_at": timestamp(), "source_revision": revision, "date_basis": "delivery", "calculation_version": 3,
                   "data_until": data_until, "commercial_complete": progress["commercial_complete"],
                   "articles_until": articles_until, "complete_until": complete_until,
                   "company": company, "sellers": sorted(sellers, key=lambda s: s["sale"], reverse=True),
                   "articles": articles, "providers": providers, "warnings": session.warnings,
-                  "negative_movements": negative_movements,
+                  "returns": return_rows,
                   "review": review_snapshot(session), "active_upload_ids": [u["id"] for u in active],
                   "article_attributions": [asdict(o) for o in carriers],
                   "daily_activity": [{"seller": s, "delivery_date": d, "presale_date": presale_for_delivery(d).isoformat(),
@@ -401,6 +367,11 @@ class WeekService:
             self.store.save_snapshot(key, data)
         return data
 
+    def decide_return(self, key, fingerprint, decision, note=""):
+        self.store.decide_return(key, fingerprint, decision, note)
+        self._cache.clear()
+        self._return_cache.clear()
+
     def export_path(self, path, suffix=".json"):
         target = Path(path).resolve()
         repo = Path(__file__).resolve().parents[1]
@@ -418,19 +389,23 @@ class WeekService:
             data["awards"] = RewardService(self).calculate(key, data)
         return write_json(self.export_path(path), data)
 
-    def close(self, key):
+    def close(self, key, exception_reason=""):
         progress = self.progress(key)
-        if not progress["commercial_complete"]:
-            raise ValueError("Faltan datos comerciales o la semana todavía no terminó")
-        if not progress["liquidations_complete"]:
-            raise ValueError("Falta confirmar las liquidaciones de las jornadas aplicables")
+        if not progress["documentation_complete"]:
+            raise ValueError("Faltan datos comerciales para cerrar la semana")
+        exceptional = self.now().isoformat() <= progress["week"]["end_date"]
+        if exceptional and not exception_reason.strip():
+            raise ValueError("La semana todavía no terminó; indicá un motivo para el cierre excepcional")
         review = self.store.latest_review(key)
         if (review is None or review["source_revision"] != self.store.week(key)["revision"]
                 or json.loads(review["payload"]).get("calculation_version") != 3):
             raise ValueError("Confirmá la revisión de las versiones activas antes del cierre")
         data = self.metrics(key)
+        pending = [r for r in data.get("returns", []) if r["decision"] == "PENDIENTE"]
+        if pending:
+            raise ValueError(f"Hay {len(pending)} devoluciones pendientes de aprobar/rechazar")
         from app.rewards import RewardService
         awards = RewardService(self).closing(key, data)
-        data.update(status="CERRADA", closed_at=timestamp(), administrative_closed=True,
-                    liquidations=self.store.liquidations(key), awards=awards)
+        data.update(status="CERRADA", closed_at=timestamp(), administrative_closed=True, final_numbers=True, awards=awards,
+                    exceptional_close={"used": exceptional, "reason": exception_reason.strip() if exceptional else ""})
         return self.store.save_snapshot(key, data, kind="cierre", close=True)

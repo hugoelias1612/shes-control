@@ -34,10 +34,6 @@ CREATE TABLE IF NOT EXISTS uploads(
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_upload
  ON uploads(week_id,logical_key) WHERE active=1;
 CREATE INDEX IF NOT EXISTS uploads_hash ON uploads(hash);
-CREATE TABLE IF NOT EXISTS liquidation_day_status(
- week_id TEXT NOT NULL REFERENCES weeks(id), date TEXT NOT NULL,
- confirmed_complete INTEGER NOT NULL DEFAULT 0, confirmed_at TEXT,
- count_at_confirmation INTEGER, note TEXT NOT NULL DEFAULT '', PRIMARY KEY(week_id,date));
 CREATE TABLE IF NOT EXISTS reviews(
  id INTEGER PRIMARY KEY, week_id TEXT NOT NULL REFERENCES weeks(id),
  source_revision INTEGER NOT NULL, file_path TEXT NOT NULL, payload TEXT NOT NULL,
@@ -51,6 +47,12 @@ CREATE TABLE IF NOT EXISTS audit_events(
  action TEXT NOT NULL, timestamp TEXT NOT NULL, details TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS legacy_loads(
  folder TEXT PRIMARY KEY, week_id TEXT NOT NULL REFERENCES weeks(id), date TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS return_adjustments(
+ week_id TEXT NOT NULL REFERENCES weeks(id), fingerprint TEXT NOT NULL,
+ payload TEXT NOT NULL, decision TEXT NOT NULL DEFAULT 'PENDIENTE'
+   CHECK(decision IN ('AUTOMATICA','PENDIENTE','APROBADA','RECHAZADA','IGNORADA')),
+ note TEXT NOT NULL DEFAULT '', decided_at TEXT, created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL, PRIMARY KEY(week_id,fingerprint));
 """
 
 
@@ -83,6 +85,11 @@ class WeekStore:
             if "removed_at" not in {row["name"] for row in db.execute("PRAGMA table_info(uploads)")}:
                 db.execute("ALTER TABLE uploads ADD COLUMN removed_at TEXT")
             db.execute("INSERT OR IGNORE INTO schema_version VALUES(2)")
+            db.execute("INSERT OR IGNORE INTO schema_version VALUES(4)")
+            # Migración: los adjuntos históricos permanecen auditables en uploads,
+            # pero la tabla funcional de liquidaciones dejó de formar parte del flujo.
+            db.execute("DROP TABLE IF EXISTS liquidation_day_status")
+            db.execute("UPDATE uploads SET active=0,removed_at=COALESCE(removed_at,?) WHERE type='liquidacion'", (timestamp(),))
             db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS settings_history(timestamp TEXT NOT NULL, details TEXT NOT NULL)")
             db.execute("INSERT OR IGNORE INTO settings VALUES('excluded_sellers', ?)",
@@ -123,8 +130,6 @@ class WeekStore:
                 for branch in BRANCHES:
                     db.execute("INSERT OR IGNORE INTO workdays(week_id,date,branch) VALUES(?,?,?)",
                                (key, d.isoformat(), branch))
-                db.execute("INSERT OR IGNORE INTO liquidation_day_status(week_id,date) VALUES(?,?)",
-                           (key, d.isoformat()))
         return self.week(key)
 
     def week(self, key):
@@ -149,10 +154,8 @@ class WeekStore:
         db.execute("INSERT INTO audit_events(week_id,action,timestamp,details) VALUES(?,?,?,?)",
                    (key, action, timestamp(), json.dumps(details, ensure_ascii=False)))
 
-    def changed(self, db, key, invalidate_liquidations=True):
+    def changed(self, db, key):
         db.execute("UPDATE weeks SET revision=revision+1 WHERE id=?", (key,))
-        if invalidate_liquidations:
-            db.execute("UPDATE liquidation_day_status SET confirmed_complete=0 WHERE week_id=?", (key,))
 
     def uploads(self, key, active=False):
         return self.query("SELECT * FROM uploads WHERE week_id=?" +
@@ -291,25 +294,50 @@ class WeekStore:
         rows = self.query("SELECT * FROM reviews WHERE week_id=? ORDER BY id DESC LIMIT 1", (key,))
         return rows[0] if rows else None
 
-    def liquidations(self, key):
-        return self.query("""SELECT s.*, (SELECT COUNT(*) FROM uploads u WHERE u.week_id=s.week_id
-            AND u.type='liquidacion' AND u.active=1 AND u.coverage_start=s.date) AS count_uploaded
-            FROM liquidation_day_status s WHERE week_id=? ORDER BY date""", (key,))
-
-    def confirm_liquidations(self, key, day, note=""):
+    def sync_returns(self, key, rows):
+        """Persiste la identidad y diagnóstico; conserva decisiones humanas."""
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.assert_open(db, key)
-            day = as_date(day).isoformat()
-            if not db.execute("SELECT 1 FROM liquidation_day_status WHERE week_id=? AND date=?", (key, day)).fetchone():
-                raise ValueError("Jornada fuera de semana")
-            count = db.execute("SELECT COUNT(*) FROM uploads WHERE week_id=? AND type='liquidacion' AND active=1 AND coverage_start=?",
-                               (key, day)).fetchone()[0]
-            if not count and not note.strip():
-                raise ValueError("Sin archivos, explicá por qué no hubo liquidaciones/repartos")
-            db.execute("""UPDATE liquidation_day_status SET confirmed_complete=1,confirmed_at=?,
-                count_at_confirmation=?,note=? WHERE week_id=? AND date=?""", (timestamp(), count, note, key, day))
-            self.audit(db, key, "confirmar_liquidaciones", {"date": day, "count": count, "note": note})
+            now = timestamp()
+            for row in rows:
+                prior = db.execute("SELECT decision FROM return_adjustments WHERE week_id=? AND fingerprint=?",
+                                   (key, row["fingerprint"])).fetchone()
+                automatic = "AUTOMATICA" if row["matched"] and not row.get("excess") else (
+                    "IGNORADA" if row.get("outside_unmatched") else "PENDIENTE")
+                db.execute("""INSERT INTO return_adjustments(week_id,fingerprint,payload,decision,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?) ON CONFLICT(week_id,fingerprint) DO UPDATE SET
+                    payload=excluded.payload,
+                    decision=CASE WHEN excluded.decision='AUTOMATICA' THEN 'AUTOMATICA'
+                                  WHEN return_adjustments.decision IN ('APROBADA','RECHAZADA')
+                                  THEN return_adjustments.decision ELSE excluded.decision END,
+                    updated_at=excluded.updated_at""",
+                    (key, row["fingerprint"], json.dumps(row, ensure_ascii=False), automatic, now, now))
+                if prior is None:
+                    self.audit(db, key, "devolucion_detectada", {"fingerprint": row["fingerprint"],
+                               "resultado": automatic, "matched": row["matched"]})
+                    self.audit(db, key, "devolucion_match" if row["matched"] else "devolucion_sin_match",
+                               {"fingerprint": row["fingerprint"], "referencia": row.get("matched_sale_ref", ""),
+                                "fuera_de_semana": row.get("outside_unmatched", False)})
+
+    def returns(self, key):
+        return self.query("SELECT * FROM return_adjustments WHERE week_id=? ORDER BY created_at,fingerprint", (key,))
+
+    def decide_return(self, key, fingerprint, decision, note=""):
+        if decision not in {"APROBADA", "RECHAZADA"}:
+            raise ValueError("Decisión de devolución inválida")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.assert_open(db, key)
+            row = db.execute("SELECT * FROM return_adjustments WHERE week_id=? AND fingerprint=?",
+                             (key, fingerprint)).fetchone()
+            if row is None or row["decision"] in {"AUTOMATICA", "IGNORADA"}:
+                raise ValueError("La devolución no requiere decisión manual")
+            now = timestamp()
+            db.execute("UPDATE return_adjustments SET decision=?,note=?,decided_at=?,updated_at=? WHERE week_id=? AND fingerprint=?",
+                       (decision, note.strip(), now, now, key, fingerprint))
+            self.audit(db, key, "aprobar_devolucion" if decision == "APROBADA" else "rechazar_devolucion",
+                       {"fingerprint": fingerprint, "note": note, "previous": row["decision"]})
 
     def save_snapshot(self, key, data, kind="procesado", close=False):
         with self.connect() as db:

@@ -13,13 +13,13 @@ Se puede activar manualmente una versión histórica que no esté eliminada.
 
 Los Excel originales y snapshots se conservan. Las filas quedan como ELIMINADA,
 con fecha y evento de auditoría, y los mismos archivos pueden subirse nuevamente.
-La revisión y las confirmaciones de liquidaciones deben confirmarse otra vez.
+La revisión debe confirmarse otra vez y las devoluciones se recalculan.
 Las semanas cerradas requieren reapertura antes de eliminar cargas.
 
 La migración automática a esquema 2 agrega `uploads.removed_at` sin modificar
 archivos ni eliminar registros existentes. La eliminación múltiple es atómica y
 verifica que la semana no haya cambiado desde que se abrió la lista.
-Validación actual: 98 tests, incluyendo migración, recarga del mismo Excel,
+Validación actual: 106 tests, incluyendo migración, recarga del mismo Excel,
 cancelación, selección ordenada en UI, recálculo y bloqueo en semanas cerradas.
 
 ## Arquitectura y compatibilidad
@@ -64,7 +64,6 @@ Documents/SHES-Control-Datos/
             puntos/v1_<identificador>.xlsx
             pedidos/v1_<identificador>.xlsx
             porcliente/v1_<identificador>.xlsx
-            liquidacion/v1_<identificador>.xlsx
             auditoria/revision_<identificador>.json
             procesado/procesado_<identificador>.json
             procesado/cierre_<identificador>.json
@@ -81,9 +80,10 @@ Para backup, cerrar la aplicación y copiar **la carpeta de datos completa**, no
 la base. Esta versión guarda rutas absolutas: mover datos de equipo requiere una
 futura herramienta de relocalización. No compartir esta SQLite como solución multi-PC.
 
-## Esquema SQLite (versión 3)
+## Esquema SQLite (versión 4)
 
-La versión 3 incorpora las tablas de premios y controles descritas en [PREMIOS.md](PREMIOS.md).
+La versión 4 incorpora `return_adjustments` y elimina la tabla funcional de
+liquidaciones. La versión 3 incorporó las tablas de premios de [PREMIOS.md](PREMIOS.md).
 
 | Tabla | Datos y restricciones principales |
 | --- | --- |
@@ -91,20 +91,18 @@ La versión 3 incorpora las tablas de premios y controles descritas en [PREMIOS.
 | `weeks` | ID ISO, inicio único, fin, estado persistente, reapertura, revisión, timestamps |
 | `workdays` | Una fila por semana/fecha/sucursal, trabajó/no trabajó y motivo |
 | `uploads` | Tipo, clave lógica, ruta, nombre original, hash, fechas detectadas y semana, sucursal, versión, activa, metadatos, timestamp, removed_at |
-| `liquidation_day_status` | Por jornada: confirmación, fecha/hora, cantidad al confirmar y nota |
+| `return_adjustments` | Huella estable, diagnóstico, decisión, nota y timestamps de devoluciones |
 | `reviews` | Revisiones confirmadas, revisión de fuentes, JSON y ruta del snapshot |
 | `snapshots` | Cada procesamiento/cierre, revisión de fuentes, ruta, hash y timestamp |
 | `audit_events` | Acción, timestamp y detalles JSON |
 | `legacy_loads` | Referencias a las cargas diarias anteriores, sin modificarlas |
 
 Índice único parcial: una sola versión activa por semana/clave lógica. Claves de
-Puntos: sucursal (archivo semanal); Pedidos: una por hash y semana; PorCliente: una por semana. Las liquidaciones
-son adjuntos independientes. La cantidad cargada se consulta de los adjuntos activos,
-sin inventar cantidad esperada. Cambios de fuentes incrementan la revisión semanal;
+Puntos: sucursal (archivo semanal); Pedidos: una por hash y semana; PorCliente: una por semana.
+Cambios de fuentes incrementan la revisión semanal;
 una revisión humana obsoleta no puede confirmar sobre datos nuevos.
 
-Estados derivados de jornadas y documentación: EN_CURSO, PREVENTA_COMPLETA y
-LIQUIDACIONES_PENDIENTES. CERRADA y REABIERTA se persisten. No se infiere que una
+Estados derivados: EN_CURSO y LISTA_PARA_CERRAR. CERRADA y REABIERTA se persisten. No se infiere que una
 semana pasada esté cerrada solamente por su fecha.
 
 ## Cargas, rangos y versiones
@@ -144,7 +142,7 @@ declarar que la preventa semanal está completa, aunque no tenga movimientos.
 No trabajado puede marcarse/revertirse para una o ambas sucursales de lunes a sábado.
 Cada sucursal conserva su motivo y eventos. Sus Puntos históricos siguen guardados
 pero no aportan actividad. No se exige un Excel vacío. Si las dos no trabajaron,
-la jornada no exige reportes ni confirmación de liquidaciones. Si existen pedidos
+la jornada no exige reportes. Si existen pedidos
 excepcionales en esa fecha, su venta sigue conservada; no convierte el día en jornada
 operativa ni cambia por sí sola la marca administrativa.
 
@@ -178,7 +176,11 @@ Se muestra por separado **ventas hasta**, **artículos hasta** y **preventa comp
 Las fechas primeras son coberturas declaradas de reportes activos; la última es el
 avance documental continuo desde el lunes. Una semana incompleta permite analizar.
 
-PorCliente se cruza por cliente y fecha de entrega, con el vendedor final del pedido. Los destinos ambiguos se advierten; las líneas negativas se conservan separadas sin afectar preventa ni artículos vendidos.
+PorCliente se cruza por cliente y fecha de entrega, con el vendedor final del pedido.
+Los positivos solo entran al hallar pedidos de esta semana. Los negativos buscan por
+cliente, artículo y vendedor la venta positiva anterior más cercana; una devolución
+posterior compatible puede descontarla. Los negativos posteriores sin match no afectan
+la semana. Los casos sin match dentro de la semana se aprueban o rechazan manualmente.
 Sus fuentes crudas quedan conservadas. No se prorratean importes para forzar coincidencias.
 Los pedidos sin vendedor se muestran como SIN ASIGNAR: requieren asignación en la revisión
 y una alerta informa el importe que aún no suma. Las revisiones anteriores basadas en alta
@@ -188,28 +190,29 @@ Hora Venta sigue siendo señal SIGO; sin pedido conciliado se advierte. No gener
 importes o compradores ficticios. Puntos solo permiten calcular métricas sobre lo
 cargado: resultados parciales no representan carteras todavía no exportadas.
 
-## Revisión, liquidaciones, cierre y reapertura
+## Revisión, devoluciones, cierre y reapertura
 
 REVISAR ASIGNACIONES abre las tarjetas existentes. Las decisiones confirmadas se
 guardan como JSON nuevo; ante otra versión se proponen las asignaciones por ID lógico,
 pero hay que revisar y confirmar nuevamente. Cambiar fuentes, activa, no trabajado
 o revisión invalida las confirmaciones administrativas para no cerrar con datos obsoletos.
 
-Liquidaciones se adjuntan manualmente a una jornada comercial. En esta etapa son
-evidencia documental: **no se interpretan importes, cuentas corrientes ni devoluciones**.
-La confirmación guarda timestamp, cantidad cargada y nota. Con cero archivos se exige
-una nota explicativa (por ejemplo, sin repartos). No existe denominador de camiones.
+La pestaña **Devoluciones** muestra match, decisión e impacto. Los matches son
+automáticos; los casos sin match de la semana exigen APROBAR o RECHAZAR. La decisión
+persiste mediante una huella de fecha, cliente, vendedor, artículo, proveedor,
+cantidad e importe. Reemplazar PorCliente no duplica ni vuelve a preguntar el mismo caso.
 
 Cerrar exige:
 
-1. Semana terminada.
+1. Semana terminada, o cierre excepcional con motivo.
 2. Jornadas comerciales completas salvo no trabajadas; domingo sin SIGO.
 3. Revisión confirmada sobre versiones actuales.
-4. Liquidaciones completas confirmadas en las jornadas aplicables.
+4. Devoluciones sin match resueltas.
+5. Control final de premios, cuando existan reglas aplicables.
 
-Se guarda un snapshot de cierre con revisión, métricas, atribución de artículos,
-actividad, IDs de versiones y confirmaciones. `administrative_closed=true`, pero
-`final_numbers=false`: todavía no hay conciliación financiera automática.
+Se guarda un snapshot de cierre con revisión, métricas, devoluciones, atribución de
+artículos, actividad, IDs de versiones y controles. El cierre marca
+`administrative_closed=true` y `final_numbers=true`.
 `awards` guarda el cálculo de premios y sus controles administrativos. Con reglas
 vigentes, se exige control final válido por vendedor antes de confirmar premios.
 Ver [PREMIOS.md](PREMIOS.md) para configuración, estados y exportación.
@@ -241,7 +244,7 @@ como una nueva revisión semanal.
 5. Marcar una sucursal no trabajada y revertir. Revisar explicación y actividad.
 6. Abrir revisión, reasignar un pedido y confirmar. Procesar/ver dashboard. Comparar
    ventas del destino con visitas del vendedor original.
-7. Adjuntar liquidaciones, confirmar por jornada (nota si no hubo repartos).
+7. Revisar Devoluciones y resolver los movimientos sin match.
 8. En una semana finalizada y completa, cerrar. Comprobar navegación/exportación
    habilitadas y botones de modificación bloqueados.
 9. Reabrir con motivo, corregir y cerrar otra vez. Abrir el snapshot original y el
@@ -249,14 +252,15 @@ como una nueva revisión semanal.
 
 ## Validación y pendientes
 
-La suite contempla 98 pruebas: 22 diarias, 57 semanales y 19 de premios e interfaz. Incluye los
+La suite contempla 106 pruebas: 22 diarias, 57 semanales, 19 de premios e interfaz
+y 8 escenarios concentrados de devoluciones. Incluye los
 30 casos solicitados y regresiones adicionales de rangos,
 reapertura, persistencia al reiniciar, manipulación de archivos, reasignación y UI.
 Se ejecutó además una carga semanal con copias temporales de los cuatro Excel
 reales del 18/09; sus hashes originales permanecieron iguales. La base de producción
 no se creó ni migró durante esa prueba: se inicializa al abrir la aplicación.
 
-Pendientes: parser financiero de liquidaciones, ejecución de pagos, sincronización,
+Pendientes: ejecución de pagos, sincronización,
 relocalización de datos entre equipos, detección normalizada de contenido Excel,
 atribución ambigua de artículos a varias fechas/destinos y automatización de la
 adopción de revisiones diarias antiguas. La UI sigue procesando Excel de forma

@@ -1,5 +1,19 @@
 # Auditoría — 21/09/2026
 
+## Actualización — 24/09/2026
+
+- Se retiró Liquidaciones de la UI, el cierre y la carga de archivos. La migración
+  v4 desactiva esos adjuntos antiguos, conserva sus archivos y elimina su tabla funcional.
+- PorCliente reconoce positivos asociados a pedidos semanales y negativos como
+  devoluciones. El match simple usa cliente, artículo, vendedor y la venta anterior
+  más cercana; una reasignación conserva el vendedor final del pedido.
+- Los negativos sin match dentro de la semana requieren APROBAR/RECHAZAR. Los
+  posteriores sin venta semanal compatible se ignoran para esa semana.
+- Bruto, devoluciones y neto alimentan compradores, conversión, ticket, artículos,
+  proveedores, bultos, comisión y premios. Cobertura conserva la actividad SIGO.
+- Validación: 106 pruebas, incluidos rangos amplios 07–16, positivos posteriores,
+  devoluciones posteriores parciales/totales, persistencia, cierres y regresiones.
+
 Se revisaron todos los módulos originales, main, dependencias y configuración Git.
 Se mantuvieron Python/PySide6 y el flujo carga → revisión → confirmación → dashboard.
 
@@ -10,7 +24,7 @@ Se mantuvieron Python/PySide6 y el flujo carga → revisión → confirmación �
 - Original/válida: los pendientes ya sumaban y los anulados se distinguían.
 - Proveedor en Descripción.5, bultos fraccionarios, HUGO excluido y vendedor original.
 - NumericItem comparaba números y las tablas se llenaban antes de habilitar orden.
-- Resultados marcados preliminares, con liquidaciones pendientes.
+- Resultados preliminares hasta el cierre semanal.
 
 ## Correcciones
 
@@ -68,7 +82,8 @@ Se mantuvieron Python/PySide6 y el flujo carga → revisión → confirmación �
 - Solo `.xlsx`: `.xls` requería un motor no instalado y antes se renombraba a
   `.xlsx` al copiar. Convertir desde Excel cuando corresponda.
 - Trabajo síncrono en UI: archivos grandes pueden congelarla temporalmente.
-- Liquidaciones, premios, objetivos, SQL y sincronización continúan pendientes.
+- Sincronización multiusuario continúa pendiente. Premios y devoluciones semanales
+  se guardan en SQLite; no hay ajustes retroactivos de semanas ya pagadas.
 - Los JSON son instantáneas reemplazables de una carga, no historial inmutable de
   cada edición ni solución concurrente multiusuario.
 

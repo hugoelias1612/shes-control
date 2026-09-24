@@ -185,8 +185,11 @@ def aggregate_articles(
                     "quantity": 0.0,
                     "sale": 0.0,
                     "sale_net": 0.0,
-
-                    "clients": set(),
+                    "sale_gross": 0.0,
+                    "returns": 0.0,
+                    "quantity_gross": 0.0,
+                    "quantity_returned": 0.0,
+                    "client_net": {},
                 }
 
             item = articles[
@@ -200,22 +203,28 @@ def aggregate_articles(
             item["quantity"] += (
                 article.quantity
             )
+            if article.quantity >= 0:
+                item["quantity_gross"] += article.quantity
+            else:
+                item["quantity_returned"] += abs(article.quantity)
 
             item["sale"] += (
                 article.total
             )
 
-            item["clients"].add(
-                order.client_code
-            )
+            net_for_client = article.net_total if article.net_total is not None else article.total
+            item["client_net"][order.client_code] = item["client_net"].get(order.client_code, 0) + net_for_client
+            if net_for_client >= 0:
+                item["sale_gross"] += net_for_client
+            else:
+                item["returns"] += abs(net_for_client)
 
     result = []
 
     for item in articles.values():
 
-        client_count = len(
-            item["clients"]
-        )
+        positive_clients = {client for client, value in item["client_net"].items() if value > 0.005}
+        client_count = len(positive_clients)
 
         result.append(
             {
@@ -242,7 +251,12 @@ def aggregate_articles(
                 ),
 
                 "clients": client_count,
-                "client_codes": sorted(item["clients"]),
+                "client_codes": sorted(positive_clients),
+                "client_net": {client: round(value, 2) for client, value in item["client_net"].items()},
+                "sale_gross": round(item["sale_gross"], 2),
+                "returns": round(item["returns"], 2),
+                "quantity_gross": round(item["quantity_gross"], 4),
+                "quantity_returned": round(item["quantity_returned"], 4),
 
                 "buyer_coverage_pct": round(
                     percentage(
@@ -263,13 +277,7 @@ def aggregate_articles(
             }
         )
 
-    return sorted(
-        result,
-        key=lambda item: item[
-            "sale"
-        ],
-        reverse=True,
-    )
+    return sorted(result, key=lambda item: item["sale_net"] if item["sale_net"] is not None else item["sale"], reverse=True)
 
 
 # ============================================================
@@ -302,6 +310,11 @@ def aggregate_providers(
                 "quantity": 0.0,
                 "articles": set(),
                 "clients": set(),
+                "client_net": {},
+                "sale_gross": 0.0,
+                "returns": 0.0,
+                "quantity_gross": 0.0,
+                "quantity_returned": 0.0,
             }
 
         item = providers[
@@ -319,8 +332,16 @@ def aggregate_providers(
         item["quantity"] += (
             article["quantity"]
         )
-
-        item["clients"].update(article["client_codes"])
+        item["sale_gross"] += article.get("sale_gross", article["sale"])
+        item["returns"] += article.get("returns", 0)
+        item["quantity_gross"] += article.get("quantity_gross", article["quantity"])
+        item["quantity_returned"] += article.get("quantity_returned", 0)
+        if "client_net" in article:
+            for client, value in article["client_net"].items():
+                item["client_net"][client] = item["client_net"].get(client, 0) + value
+        else:
+            for client in article.get("client_codes", []):
+                item["client_net"][client] = item["client_net"].get(client, 0) + 1
 
         item["articles"].add(
             article["code"]
@@ -359,11 +380,16 @@ def aggregate_providers(
                     item["articles"]
                 ),
 
-                "clients": len(item["clients"]),
+                "clients": len({c for c, value in item["client_net"].items() if value > 0.005}),
+                "client_codes": sorted(c for c, value in item["client_net"].items() if value > 0.005),
+                "sale_gross": round(item["sale_gross"], 2),
+                "returns": round(item["returns"], 2),
+                "quantity_gross": round(item["quantity_gross"], 4),
+                "quantity_returned": round(item["quantity_returned"], 4),
 
                 "buyer_coverage_pct": round(
                     percentage(
-                        len(item["clients"]),
+                        len({c for c, value in item["client_net"].items() if value > 0.005}),
                         buyer_count,
                     ),
                     2,
@@ -675,8 +701,6 @@ def process_presale(
         ),
 
         "final_numbers": False,
-
-        "liquidations_required": True,
 
         "company": {
             "original_sale": round(sum(o.original_total for o in session.orders if o.assigned_seller in included_sellers), 2),

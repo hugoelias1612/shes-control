@@ -1374,10 +1374,8 @@ class ReviewWindow(QMainWindow):
             "✅ Revisión confirmada.\n\n"
             "Se guardó:\n"
             f"{path}\n\n"
-            "Todavía NO estamos cerrando "
-            "premios ni números finales. "
-            "Eso ocurrirá más adelante luego "
-            "de importar las liquidaciones.",
+            "La semana todavía no está cerrada. "
+            "Revisá las devoluciones y los premios antes del cierre.",
         )
 
         self.review_confirmed = True
@@ -1429,8 +1427,7 @@ class ReviewWindow(QMainWindow):
             "Se creó:\n"
             "preventa_procesada.json\n\n"
             "Estos números todavía son PRELIMINARES.\n"
-            "Los números finales y premios requerirán "
-            "las liquidaciones.",
+            "Los números finales se guardan al cerrar la semana.",
         )
 
         self.dashboard_window = DashboardWindow(

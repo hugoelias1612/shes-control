@@ -345,13 +345,13 @@ class RewardsPanel(QWidget):
         label=QLabel("Comisión y premios son conceptos separados. Premios abiertos: estimados, no liquidables.\n"
             "Doble clic en un vendedor para ver escalones, cargar valores manuales, invalidar premios y confirmar el control final.")
         label.setWordWrap(True);layout.addWidget(label)
-        self.seller_table=table(["Vendedor","Venta antes IVA","Cobertura %","Conversión %","Ticket antes IVA","Cumplidos","Pendientes","Premios","Comisión 3%","Total variable","Control final"],
-            [[s["seller"],s["sale_net"] if s["sale_net"] is not None else "No disponible",s["coverage"],s["conversion"],
+        self.seller_table=table(["Vendedor","Venta bruta","Devoluciones","Venta neta antes IVA","Cobertura %","Conversión %","Ticket antes IVA","Cumplidos","Pendientes","Premios","Comisión 3%","Total variable","Control final"],
+            [[s["seller"],s.get("sale_gross") if s.get("sale_gross") is not None else "No disponible",s.get("returns",0),s["sale_net"] if s["sale_net"] is not None else "No disponible",s["coverage"],s["conversion"],
               s["ticket"] if s["ticket"] is not None else "—",s["reached"],s["pending"],s["total_awards"],
               s["base_commission"] if s["base_commission"] is not None else "—",s["total_variable"] if s["total_variable"] is not None else "—",
               "Verificado" if s["control_valid"] else "Pendiente"] for s in self.data["sellers"]])
         self.seller_table.cellDoubleClicked.connect(lambda row,_:RewardDetail(self,self.seller_table.item(row,0).text()).exec())
-        format_columns(self.seller_table,{1:"money",2:"percent",3:"percent",4:"money",7:"money",8:"money",9:"money"})
+        format_columns(self.seller_table,{1:"money",2:"money",3:"money",4:"percent",5:"percent",6:"money",9:"money",10:"money",11:"money"})
         layout.addWidget(filterable(self.seller_table));actions=QHBoxLayout()
         b=QPushButton("Recalcular premios");b.setEnabled(self.engine.store.week(self.key)["status"]!="CERRADA")
         b.clicked.connect(lambda:self.run(lambda:self.engine.calculate(self.key,persist=True)));actions.addWidget(b)

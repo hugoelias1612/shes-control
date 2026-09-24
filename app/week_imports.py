@@ -32,8 +32,6 @@ class UploadCandidate:
     def logical_key(self):
         if self.kind == "puntos":
             return f"puntos:semanal:{self.branch}"
-        if self.kind == "liquidacion":
-            return f"liquidacion:{self.hash}"
         if self.kind == "pedidos":
             return f"pedidos:{self.hash}"
         return self.kind
@@ -41,10 +39,12 @@ class UploadCandidate:
     def validate(self, week):
         if self.error:
             raise ValueError(self.error)
-        if self.kind not in {"puntos", "pedidos", "porcliente", "liquidacion"}:
+        if self.kind not in {"puntos", "pedidos", "porcliente"}:
             raise ValueError("Tipo de archivo no reconocido")
         start, end = as_date(self.coverage_start), as_date(self.coverage_end)
-        if not week["start_date"] <= start.isoformat() <= end.isoformat() <= week["end_date"]:
+        if start > end:
+            raise ValueError("El rango detectado es inválido")
+        if self.kind != "porcliente" and not week["start_date"] <= start.isoformat() <= end.isoformat() <= week["end_date"]:
             raise ValueError("Las fechas deben estar dentro de la semana seleccionada")
         if self.kind == "puntos":
             if self.branch not in BRANCHES:
@@ -57,8 +57,6 @@ class UploadCandidate:
         else:
             if not self.metadata.get("coverage_confirmed"):
                 raise ValueError("Falta indicar la semana del reporte")
-        if self.kind == "liquidacion" and start != end:
-            raise ValueError("Asociá la liquidación a una sola fecha")
 
 
 def detect_branch(dataframe):
@@ -94,7 +92,7 @@ def inspect_upload(path):
             if PORCLIENTE_REQUIRED_COLUMNS <= columns:
                 candidates.add("porcliente")
     if len(candidates) != 1:
-        candidate.error = "Estructura no reconocida o ambigua. Liquidaciones se adjuntan desde su pestaña."
+        candidate.error = "Estructura no reconocida o ambigua."
         return candidate
     candidate.kind = candidates.pop()
     if candidate.kind == "puntos":

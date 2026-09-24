@@ -176,12 +176,12 @@ class RewardsTests(unittest.TestCase):
         self.assertEqual(book.sheetnames,["RESUMEN","DETALLE PREMIOS"])
         summary=book["RESUMEN"]
         self.assertEqual(summary.max_row,6)
-        self.assertEqual(summary['C4'].value,270000)
+        self.assertEqual(summary['E4'].value,270000)
         self.assertEqual(summary['A5'].data_type,'s')
         self.assertIn("PRELIMINAR",summary['A1'].value)
         self.assertEqual(summary.freeze_panes,"D4")
         self.assertEqual(summary["A6"].value,"TOTAL")
-        self.assertEqual(summary["C6"].value,540000)
+        self.assertEqual(summary["E6"].value,540000)
         book.close()
 
     def test_tables_allow_resize_move_and_restore_selection(self):
@@ -262,7 +262,6 @@ class RewardIntegrationTests(unittest.TestCase):
         from datetime import timedelta
         for offset in range(1,6):fixture.store.set_worked(fixture.key,test_weeks.MON+timedelta(days=offset),test_weeks.BRANCHES,False,"Feriado")
         session,_,_,rev=fixture.service.build_session(fixture.key);fixture.service.confirm_review(fixture.key,session,rev)
-        for day in [test_weeks.MON,test_weeks.SUN]:fixture.store.confirm_liquidations(fixture.key,day,"Sin pendientes")
         with self.assertRaisesRegex(ValueError,"control final"):fixture.service.close(fixture.key)
         for seller in engine.calculate(fixture.key)["sellers"]:
             engine.confirm_control(fixture.key,seller["seller"],{"sale_net||":seller["sale_net"]},"Verificado","2026-09-30",seller["source_signature"])

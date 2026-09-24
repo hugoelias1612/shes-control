@@ -310,7 +310,7 @@ class RewardService:
                     earned=rule["amount"] if status in {"CUMPLIDO_PRELIMINAR","CONFIRMADO"} else 0,
                     manual=manual_row, invalidations=invalid))
             estimated = money_value(sum(number(r["earned"]) for r in rows))
-            results.append(dict(seller=name,sale_net=base,coverage=overrides.get("coverage||",seller.get("coverage_pct")),conversion=overrides.get("conversion||",seller.get("conversion_pct")),
+            results.append(dict(seller=name,sale_gross=seller.get("sale_gross"),returns=seller.get("returns",0),sale_net=base,coverage=overrides.get("coverage||",seller.get("coverage_pct")),conversion=overrides.get("conversion||",seller.get("conversion_pct")),
                 ticket=overrides.get("ticket||",seller.get("average_ticket_net")),base_commission=commission,
                 total_awards=estimated,total_variable=money_value(number(commission)+number(estimated)) if commission is not None else None,
                 reached=sum(r["status"] in {"CUMPLIDO_PRELIMINAR","CONFIRMADO"} for r in rows),

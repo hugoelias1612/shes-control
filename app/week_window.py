@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from app.week_calendar import BRANCHES, as_date, calendar_weeks
-from app.week_imports import inspect_batch, UploadCandidate
+from app.week_imports import inspect_batch
 from app.week_service import WeekService
 from app.week_store import file_hash
 from app.review_window import ReviewWindow
@@ -103,8 +103,8 @@ class UploadDialog(QDialog):
                 branch.addItem(value.title(), value)
             branch.setEnabled(candidate.kind == "puntos")
             self.grid.setCellWidget(row, 3, branch)
-            start = candidate.coverage_start if candidate.kind == "puntos" else week["start_date"]
-            end = candidate.coverage_end if candidate.kind == "puntos" else week["end_date"]
+            start = candidate.coverage_start if candidate.kind in {"puntos", "porcliente"} else week["start_date"]
+            end = candidate.coverage_end if candidate.kind in {"puntos", "porcliente"} else week["end_date"]
             starts, ends = date_edit(start or week["start_date"]), date_edit(end or week["end_date"])
             starts.setEnabled(False)
             ends.setEnabled(False)
@@ -330,9 +330,10 @@ class WeekControlWindow(QMainWindow):
         layout.addWidget(QLabel(f"AVANCE SEMANAL · Ventas hasta: {self.data.get('data_until') or 'sin pedidos'} · "
                                f"Artículos hasta: {self.data.get('articles_until') or 'sin PorCliente'}\n"
                                f"Preventa completa hasta: {self.data.get('complete_until') or 'todavía incompleta'}\n"
-                               f"Venta acumulada: {money(company['sale'])} · Jornadas operativas procesadas: {company.get('working_days', 0)}\n"
-                               f"Promedio operativo: {money(company.get('average_daily_sale', 0))} · Clientes compradores: {company['buyers']}\n"
-                               "Premios: pendientes de implementación. Importes netos de liquidaciones aún no conciliados."))
+                               f"Venta bruta antes de IVA: {money(company.get('sale_gross') or 0)} · "
+                               f"Devoluciones: {money(company.get('returns') or 0)} · Venta neta: {money(company.get('sale_net') or 0)}\n"
+                               f"Jornadas operativas: {company.get('working_days', 0)} · Clientes compradores netos: {company['buyers']}\n"
+                               f"Promedio operativo: {money(company.get('average_daily_sale', 0))}. Comisión y premios usan la venta neta."))
         basis = QLabel(self.data.get("metric_basis", ""))
         basis.setWordWrap(True)
         layout.addWidget(basis)
@@ -344,40 +345,57 @@ class WeekControlWindow(QMainWindow):
         # Información operativa por vendedor, sin alterar el contrato del dashboard diario.
         old_columns = sellers.columnCount()
         sellers.setSortingEnabled(False)
-        sellers.setColumnCount(old_columns + 2)
-        sellers.setHorizontalHeaderItem(old_columns, QTableWidgetItem("Días operativos"))
-        sellers.setHorizontalHeaderItem(old_columns + 1, QTableWidgetItem("Promedio operativo"))
+        sellers.setColumnCount(old_columns + 5)
+        for offset, heading in enumerate(["Venta bruta neta IVA", "Devoluciones", "Venta neta", "Días operativos", "Promedio operativo"]):
+            sellers.setHorizontalHeaderItem(old_columns + offset, QTableWidgetItem(heading))
         by_name = {s["seller"]: s for s in self.data["sellers"]}
         for row in range(sellers.rowCount()):
             metrics = by_name[sellers.item(row, 0).text()]
-            sellers.setItem(row, old_columns, NumericItem(metrics.get("working_days", 0)))
-            sellers.setItem(row, old_columns + 1, NumericItem(metrics.get("average_daily_sale", 0), money(metrics.get("average_daily_sale", 0))))
+            sellers.setItem(row, old_columns, NumericItem(metrics.get("sale_gross") or 0, money(metrics.get("sale_gross") or 0)))
+            sellers.setItem(row, old_columns + 1, NumericItem(metrics.get("returns") or 0, money(metrics.get("returns") or 0)))
+            sellers.setItem(row, old_columns + 2, NumericItem(metrics.get("sale_net") or 0, money(metrics.get("sale_net") or 0)))
+            sellers.setItem(row, old_columns + 3, NumericItem(metrics.get("working_days", 0)))
+            sellers.setItem(row, old_columns + 4, NumericItem(metrics.get("average_daily_sale", 0), money(metrics.get("average_daily_sale", 0))))
         configure_table(sellers)
         sellers.sortItems(1, Qt.DescendingOrder)
         self.tabs.addTab(filterable(sellers), "Vendedores")
         articles_table = self.dashboard_support.create_articles_tab()
+        self.add_net_columns(articles_table, self.data["articles"], lambda item: (item["code"], item["provider"]), (0, 2), True)
         articles_table.sortItems(4, Qt.DescendingOrder)
         articles_table.cellDoubleClicked.connect(lambda row, _: self.open_breakdown(
             "articles", articles_table.item(row, 0).text(), articles_table.item(row, 2).text()))
         self.tabs.addTab(filterable(articles_table), "Artículos")
         providers_table = self.dashboard_support.create_providers_tab()
+        self.add_net_columns(providers_table, self.data["providers"], lambda item: item["provider"], (0,), False)
         providers_table.sortItems(1, Qt.DescendingOrder)
         providers_table.cellDoubleClicked.connect(lambda row, _: self.open_breakdown(
             "providers", providers_table.item(row, 0).text()))
         self.tabs.addTab(filterable(providers_table), "Proveedores")
-        self.tabs.addTab(self.liquidations_tab(progress), "Liquidaciones")
-        separated = QWidget()
-        separated_layout = QVBoxLayout(separated)
-        separated_layout.addWidget(QLabel("Movimientos negativos del archivo original. No descuentan preventa ni artículos vendidos. El vendedor mostrado es el de PorCliente."))
-        separated_layout.addWidget(filterable(table(["Fecha", "Cliente", "Vendedor origen", "Artículo", "Descripción", "Cantidad", "Importe"],
-            [[r["date"], r["client"], r["source_seller"], r["article"], r["description"], r["quantity"], r["amount"]]
-             for r in self.data.get("negative_movements", [])])))
-        self.tabs.addTab(separated, "Negativos separados")
+        self.tabs.addTab(self.returns_tab(), "Devoluciones")
         from app.reward_window import RewardsPanel
         self.tabs.addTab(RewardsPanel(self.service, self.key, self.data, self), "Premios")
         self.tabs.addTab(self.audit_tab(), "Archivos / Auditoría")
         self.tabs.setCurrentIndex(max(0, selected_tab))
         restore_tables(self, saved_tables)
+
+    def add_net_columns(self, grid, records, key_fn, key_columns, articles):
+        by_key = {key_fn(item): item for item in records}
+        start = grid.columnCount()
+        headings = (["Venta bruta", "Devoluciones", "Venta neta", "Bultos brutos", "Bultos devueltos", "Bultos netos"]
+                    if articles else ["Venta bruta", "Devoluciones", "Venta neta"])
+        grid.setSortingEnabled(False)
+        grid.setColumnCount(start + len(headings))
+        for offset, heading in enumerate(headings):
+            grid.setHorizontalHeaderItem(start + offset, QTableWidgetItem(heading))
+        for row in range(grid.rowCount()):
+            parts = tuple(grid.item(row, col).text() for col in key_columns)
+            record = by_key.get(parts if len(parts) > 1 else parts[0], {})
+            values = [record.get("sale_gross", 0), record.get("returns", 0), record.get("sale_net", 0)]
+            if articles:
+                values += [record.get("quantity_gross", 0), record.get("quantity_returned", 0), record.get("quantity", 0)]
+            for offset, value in enumerate(values):
+                grid.setItem(row, start + offset, NumericItem(value or 0, money(value or 0) if offset < 3 else str(round(value or 0, 4))))
+        configure_table(grid)
 
     def loads_tab(self, progress):
         widget = QWidget()
@@ -441,45 +459,50 @@ class WeekControlWindow(QMainWindow):
         self.guarded(lambda: self.service.store.set_worked(self.key, self.work_date.date().toPython(), branches, worked, reason))
         self.refresh()
 
-    def liquidations_tab(self, progress):
+    def returns_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("Archivos adjuntos para auditoría; todavía no se interpretan importes ni devoluciones.\n"
-                               "La cantidad esperada de camiones es desconocida. Administración confirma la integridad por jornada."))
-        rows = [[d["date"], d["liquidations"]["count_uploaded"],
-                 "Confirmadas" if d["liquidations"]["confirmed_complete"] else "Sin confirmar",
-                 d["liquidations"]["confirmed_at"] or "—", d["liquidations"]["note"]] for d in progress["days"]]
-        layout.addWidget(table(["Fecha", "Cargadas", "Completas", "Confirmación", "Nota"], rows))
+        layout.addWidget(QLabel("Los negativos con match descuentan automáticamente. Los negativos sin match de la semana requieren aprobar o rechazar. "
+                               "Un negativo posterior sin venta semanal compatible no afecta esta semana."))
+        self.return_filter = QComboBox()
+        self.return_filter.addItems(["Todas", "Con match", "Sin match", "Aprobadas", "Rechazadas", "Pendientes"])
+        layout.addWidget(self.return_filter)
+        self.return_rows = self.data.get("returns", [])
+        self.return_table = table(["Huella", "Fecha", "Cliente", "Vendedor origen", "Vendedor final", "Artículo", "Proveedor",
+                                   "Cantidad", "Importe", "Match", "Decisión", "Impacto", "Advertencia"],
+            [[r["fingerprint"], r["date"], r["client"], r["source_seller"], r["assigned_seller"], r["article"], r["provider"],
+              r["quantity"], r["amount_net"], "Sí" if r["matched"] else "No", r["decision"], r["impact"], r["warning"]]
+             for r in self.return_rows])
+        self.return_table.setColumnHidden(0, True)
+        def apply_filter():
+            selected = self.return_filter.currentText()
+            by_fingerprint = {r["fingerprint"]: r for r in self.return_rows}
+            for row in range(self.return_table.rowCount()):
+                value = by_fingerprint[self.return_table.item(row, 0).text()]
+                visible = (selected == "Todas" or selected == "Con match" and value["matched"] or
+                    selected == "Sin match" and not value["matched"] or selected == "Aprobadas" and value["decision"] == "APROBADA" or
+                    selected == "Rechazadas" and value["decision"] == "RECHAZADA" or selected == "Pendientes" and value["decision"] == "PENDIENTE")
+                self.return_table.setRowHidden(row, not visible)
+        self.return_filter.currentTextChanged.connect(apply_filter)
+        layout.addWidget(self.return_table)
         actions = QHBoxLayout()
-        self.liq_date = date_edit(progress["week"]["start_date"])
-        actions.addWidget(self.liq_date)
-        for text, callback in [("Adjuntar liquidaciones", self.attach_liquidations),
-                               ("CONFIRMAR LIQUIDACIONES COMPLETAS", self.confirm_liquidations)]:
+        for text, decision in [("APROBAR", "APROBADA"), ("RECHAZAR", "RECHAZADA")]:
             button = QPushButton(text)
             button.setEnabled(not self.closed)
-            button.clicked.connect(callback)
+            button.clicked.connect(lambda _, value=decision: self.decide_return(value))
             actions.addWidget(button)
         layout.addLayout(actions)
         return widget
 
-    def attach_liquidations(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Adjuntar liquidaciones de la jornada", "", "Excel (*.xlsx)")
-        if not paths:
+    def decide_return(self, decision):
+        row = self.return_table.currentRow()
+        record = next((r for r in self.return_rows if row >= 0 and r["fingerprint"] == self.return_table.item(row, 0).text()), None)
+        if record is None or record["decision"] not in {"PENDIENTE", "APROBADA", "RECHAZADA"}:
+            QMessageBox.information(self, "Devoluciones", "Seleccioná una devolución sin match que requiera decisión.")
             return
-        day = self.liq_date.date().toString("yyyy-MM-dd")
-        if QMessageBox.question(self, "Confirmar adjuntos", f"¿Guardar {len(paths)} liquidaciones para el {day}?") != QMessageBox.Yes:
-            return
-        def save():
-            candidates = [UploadCandidate(Path(p), file_hash(p), "liquidacion", coverage_start=day, coverage_end=day,
-                         metadata={"coverage_confirmed": True, "opaque_attachment": True}) for p in paths]
-            self.service.store.commit_uploads(self.key, candidates, self.service.store.week(self.key)["revision"])
-        self.guarded(save)
-        self.refresh()
-
-    def confirm_liquidations(self):
-        note, ok = QInputDialog.getText(self, "Liquidaciones completas", "Confirmo que están todas. Nota (obligatoria si no hubo repartos):")
+        note, ok = QInputDialog.getText(self, "Devolución", "Nota opcional:")
         if ok:
-            self.guarded(lambda: self.service.store.confirm_liquidations(self.key, self.liq_date.date().toPython(), note))
+            self.guarded(lambda: self.service.decide_return(self.key, record["fingerprint"], decision, note))
             self.refresh()
 
     def audit_tab(self):
@@ -559,7 +582,7 @@ class WeekControlWindow(QMainWindow):
         ids = [int(self.file_table.item(row, 0).text()) for row in rows]
         names = "\n".join(f"• #{self.file_table.item(row, 0).text()} · {self.file_table.item(row, 6).text()}" for row in rows)
         message = (f"¿Eliminar estas {len(ids)} cargas de la semana?\n\n{names}\n\n"
-                   "Se recalcularán los resultados y habrá que confirmar nuevamente revisión y liquidaciones. "
+                   "Se recalcularán los resultados y habrá que confirmar nuevamente la revisión. "
                    "No se activará una versión anterior automáticamente. Podés volver a subir los mismos Excel. "
                    "Los archivos y resultados históricos se conservan en auditoría.")
         if QMessageBox.question(self, "Eliminar cargas", message, QMessageBox.Yes | QMessageBox.No,
@@ -573,7 +596,7 @@ class WeekControlWindow(QMainWindow):
         row = self.file_table.currentRow()
         if row < 0:
             return
-        if QMessageBox.question(self, "Cambiar versión activa", "¿Usar esta versión? Las anteriores se conservan y deberá confirmar nuevamente revisión y liquidaciones.") == QMessageBox.Yes:
+        if QMessageBox.question(self, "Cambiar versión activa", "¿Usar esta versión? Las anteriores se conservan y deberá confirmar nuevamente la revisión.") == QMessageBox.Yes:
             self.guarded(lambda: self.service.store.activate(self.key, int(self.file_table.item(row, 0).text())))
             self.refresh()
 
@@ -644,6 +667,12 @@ class WeekControlWindow(QMainWindow):
             reason, ok = QInputDialog.getText(self, "Reabrir semana", "Motivo (el cierre original se conserva):")
             if ok:
                 self.guarded(lambda: self.service.store.reopen(self.key, reason))
-        elif QMessageBox.question(self, "Cerrar semana", "¿Cerrar administrativamente? Se conservará un snapshot. Los premios y la conciliación de importes de liquidaciones aún no están implementados.") == QMessageBox.Yes:
-            self.guarded(lambda: self.service.close(self.key))
+        elif QMessageBox.question(self, "Cerrar semana", "¿Cerrar la semana? Se conservará un snapshot con ventas, devoluciones, comisión y premios.") == QMessageBox.Yes:
+            progress = self.service.progress(self.key)
+            reason = ""
+            if self.service.now().isoformat() <= progress["week"]["end_date"]:
+                reason, ok = QInputDialog.getText(self, "Cierre excepcional", "La semana todavía no terminó. Motivo obligatorio:")
+                if not ok or not reason.strip():
+                    return
+            self.guarded(lambda: self.service.close(self.key, reason))
         self.refresh()

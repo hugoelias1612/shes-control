@@ -28,7 +28,10 @@ La fecha de entrega del pedido sigue siendo la real; los casos que no coinciden 
 
 Pedidos determina ventas y vendedores. PorCliente aporta artículos por cliente y fecha de entrega, respetando las reasignaciones. Si hay varios destinos posibles, se muestra una alerta desplegable y esos artículos quedan sin atribuir.
 
-**Negativos separados** conserva los movimientos con importe o cantidad negativos del PorCliente original, incluidos sus vendedores de origen. No descuentan preventa, no aportan artículos vendidos y no se consideran automáticamente devoluciones ni notas de crédito.
+**Devoluciones** muestra los importes netos negativos de PorCliente. Si encuentran una
+venta positiva semanal anterior compatible, descuentan automáticamente. Los casos sin
+match de la semana requieren aprobar o rechazar; una decisión se reconoce por huella
+estable al reemplazar PorCliente.
 
 Los resultados son de preventa, no venta neta después de devoluciones. SIGO vendido significa cliente con Hora Venta; no crea importes. Las alertas se abren cuando necesitás consultar el detalle.
 

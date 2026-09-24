@@ -21,10 +21,10 @@ Excel. La selección de vendedores de una regla restringe ese conjunto.
 
 ## Bases y métricas
 
-La venta antes de IVA de Pedidos es **NETO GRAVADO + NO GRAVADO**, excluyendo
-anulados y respetando la asignación final de la revisión. La comisión base es
-**3%** de esa venta, separada de los premios. No se divide el total por una tasa
-de IVA supuesta. Para artículos y proveedores se usa **Importes Netos** de PorCliente.
+La pertenencia semanal nace de Pedidos por **FECHA ENTREGA**. PorCliente aporta
+**Importes Netos**: positivos asociados a esos pedidos menos devoluciones aplicables.
+La comisión base es **3% de la venta neta antes de IVA**, separada de los premios.
+No se divide el total por una tasa de IVA supuesta.
 
 Métricas disponibles:
 
@@ -40,8 +40,9 @@ El ticket conserva la definición existente: venta dividida por compradores úni
 Los porcentajes se ingresan como 55 para 55%. No se juzga el objetivo elegido.
 Si falta una fuente o el importe neto, la métrica queda no disponible; no se
 convierte una ausencia de datos en un cero que pueda ganar un premio.
-Las líneas negativas de PorCliente conservan el tratamiento existente: quedan
-separadas, sin descontarse automáticamente de la preventa.
+Las líneas negativas con match descuentan automáticamente. Las que no tienen match
+dentro de la semana se aprueban o rechazan en Devoluciones; las posteriores sin una
+venta semanal compatible se ignoran para esa semana.
 
 ## Seguimiento y control
 
@@ -54,15 +55,14 @@ PENDIENTE_CONTROL_MANUAL o INVALIDADO. Para reglas manuales se carga valor
 verificado, fecha, nota libre y observación desde el detalle del vendedor.
 
 **Control final** permite verificar la venta antes de IVA y las métricas automáticas
-aplicables, registrar ajustes y dejar una nota con fecha. No interpreta liquidaciones
-ni aplica devoluciones automáticamente. Cambiar cargas, revisión, reglas o valores
+aplicables, registrar ajustes y dejar una nota con fecha. Cambiar cargas, revisión,
+decisiones de devoluciones, reglas o valores
 manuales deja obsoleto el control correspondiente: hay que revisarlo otra vez.
 
 Al cerrar, las reglas se recalculan con los valores controlados. Las cumplidas pasan
 a CONFIRMADO y las restantes a NO_ALCANZADO. Un nivel preliminar que cae por debajo
 del objetivo deja de sumar. Si hay reglas vigentes, el cierre exige controles válidos
-y datos suficientes. Se mantienen además los requisitos documentales originales de
-cierre; no se modifica el funcionamiento de la pestaña Liquidaciones.
+y datos suficientes. El cierre también exige resolver devoluciones sin match.
 
 ## Invalidaciones y alerta
 
@@ -90,7 +90,8 @@ no puede sobrescribir archivos dentro del repositorio ni del historial protegido
 
 ## Persistencia y tablas
 
-Se utiliza el SQLite existente. La migración aditiva a versión 3 agrega
+Se utiliza el SQLite existente. La versión 4 agrega `return_adjustments` y retira
+la tabla funcional de liquidaciones. La versión 3 agregó
 reward_rules, reward_results, reward_manual_values, reward_invalidations,
 reward_controls, reward_audit y reward_meta. Las reglas se versionan; los resultados
 actuales se separan de los snapshots inmutables y de la auditoría de cambios.

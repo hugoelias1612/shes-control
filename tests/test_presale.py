@@ -131,7 +131,7 @@ class PresaleTests(unittest.TestCase):
             process_presale(self.session)
         data = self.process()
         self.assertFalse(data["final_numbers"])
-        self.assertTrue(data["liquidations_required"])
+        self.assertNotIn("liquidations_required", data)
         snapshot = json.loads((self.folder / "revision_preventa.json").read_text(encoding="utf-8"))
         self.assertIn("articles", snapshot["orders"][0])
         self.assertIn("original_seller", data["review"]["orders"][0])

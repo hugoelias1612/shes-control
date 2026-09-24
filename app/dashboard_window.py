@@ -777,13 +777,12 @@ class DashboardWindow(QMainWindow):
         subtitle = QLabel(
             "Preventa procesada · "
             f"{data['preventa_date']} · "
-            "Números preliminares hasta "
-            "cargar liquidaciones"
+            "Números preliminares hasta el cierre semanal"
         )
         if data.get("week_id"):
             subtitle.setText(
                 f"Semana {data['week_id']} · {data['status']} · Datos hasta: {data.get('data_until') or 'sin pedidos'}"
-                " · Preventa: importes finales y premios aún no calculados"
+                " · Venta neta y premios según PorCliente"
             )
 
         subtitle.setStyleSheet(

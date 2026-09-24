@@ -72,8 +72,6 @@ class WeekTests(unittest.TestCase):
             self.store.set_worked(self.key, MON + timedelta(days=offset), BRANCHES, False, "Feriado ficticio")
         session, _, _, rev = self.service.build_session(self.key)
         self.service.confirm_review(self.key, session, rev)
-        for day in [MON, SUN]:
-            self.store.confirm_liquidations(self.key, day, "Sin repartos pendientes")
 
     def test_01_calendar_monday_sunday_and_year_boundary(self):
         self.assertEqual(week_bounds(date(2026, 9, 23)), (MON, SUN))
@@ -101,13 +99,14 @@ class WeekTests(unittest.TestCase):
         self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 100)
         self.assertEqual(WeekStore(self.store.root).default_exclusions(), set())
 
-    def test_articles_follow_order_seller_and_negatives_are_separate(self):
+    def test_articles_follow_order_seller_and_unmatched_return_is_pending(self):
         self.upload(self.report([self.order()]), self.report([
             self.line(seller="OTRO", amount=100), self.line(seller="OTRO", code=20, amount=-50)]))
         data = self.service.metrics(self.key)
         self.assertEqual(data["company"]["sale"], 100)
         self.assertEqual(data["articles"][0]["sale"], 100)
-        self.assertEqual(data["negative_movements"][0]["amount"], -50)
+        self.assertEqual(data["returns"][0]["amount_net"], -50)
+        self.assertEqual(data["returns"][0]["decision"], "PENDIENTE")
 
     def test_split_orders_latest_number_wins_and_removal_reverts_update(self):
         self.upload(self.report([self.order(1), self.order(2, total=200)]))
@@ -198,14 +197,12 @@ class WeekTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cerrada"):
             self.store.remove_uploads(self.key, [upload_id])
 
-    def test_remove_does_not_activate_old_version_and_invalidates_confirmations(self):
+    def test_remove_does_not_activate_old_version(self):
         self.upload(self.points())
         self.upload(self.points(client=2))
         active = self.store.uploads(self.key, active=True)[0]
-        self.store.confirm_liquidations(self.key, MON, "Sin repartos")
         self.store.remove_uploads(self.key, [active["id"]])
         self.assertEqual(self.store.uploads(self.key, active=True), [])
-        self.assertFalse(self.store.liquidations(self.key)[0]["confirmed_complete"])
         old = self.store.uploads(self.key)[0]
         self.store.activate(self.key, old["id"])
         self.assertEqual(self.store.uploads(self.key, active=True)[0]["id"], old["id"])
@@ -367,7 +364,7 @@ class WeekTests(unittest.TestCase):
         after = self.service.metrics(self.key)
         self.assertEqual(before["company"]["coverage_pct"], after["company"]["coverage_pct"])
         self.assertEqual(before["company"]["conversion_pct"], after["company"]["conversion_pct"])
-        self.assertEqual(after["company"]["buyers"], 2)
+        self.assertEqual(after["company"]["buyers"], 1)  # Sin línea positiva PorCliente para el domingo.
 
     def test_21_average_excludes_nonworked_and_sunday(self):
         self.base_data()
@@ -379,29 +376,21 @@ class WeekTests(unittest.TestCase):
         self.assertEqual(seller["average_daily_sale"], 100)
         self.assertEqual(seller["sale"], 600)
 
-    def test_22_liquidation_count_without_expected_total(self):
+    def test_22_liquidations_are_not_a_supported_upload(self):
         path = self.excel([{"Liquidación": "Reparto ficticio", "Importe": -20}])
-        c = UploadCandidate(path, file_hash(path), "liquidacion", coverage_start=MON.isoformat(),
-                            coverage_end=MON.isoformat(), metadata={"coverage_confirmed": True})
-        self.upload(c)
-        status = self.store.liquidations(self.key)[0]
-        self.assertEqual(status["count_uploaded"], 1)
-        self.assertFalse(status["confirmed_complete"])
-        self.assertNotIn("expected_count", status)
+        c = UploadCandidate(path, file_hash(path), "liquidacion", coverage_start=MON.isoformat(), coverage_end=MON.isoformat())
+        with self.assertRaisesRegex(ValueError, "no reconocido"):
+            self.upload(c)
 
-    def test_23_confirm_liquidations(self):
-        self.store.confirm_liquidations(self.key, MON, "Sin repartos")
-        status = self.store.liquidations(self.key)[0]
-        self.assertTrue(status["confirmed_complete"])
-        self.assertIsNotNone(status["confirmed_at"])
-        self.assertEqual(status["count_at_confirmation"], 0)
+    def test_23_liquidation_table_is_removed_by_migration(self):
+        names = {r["name"] for r in self.store.query("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn("liquidation_day_status", names)
 
     def test_24_closed_week_blocks_mutations(self):
         self.ready_to_close()
         self.service.close(self.key)
         for operation in [lambda: self.store.set_worked(self.key, MON, BRANCHES, False),
-                          lambda: self.upload(self.points(visited=0)),
-                          lambda: self.store.confirm_liquidations(self.key, MON, "Nota")]:
+                          lambda: self.upload(self.points(visited=0))]:
             with self.assertRaisesRegex(ValueError, "cerrada"):
                 operation()
 
@@ -420,8 +409,6 @@ class WeekTests(unittest.TestCase):
         self.upload(self.report([self.order(total=200)]))
         session, _, _, rev = self.service.build_session(self.key)
         self.service.confirm_review(self.key, session, rev)
-        self.store.confirm_liquidations(self.key, MON, "Confirmado")
-        self.store.confirm_liquidations(self.key, SUN, "Sin reparto")
         second = self.service.close(self.key)
         self.assertNotEqual(path, second)
         self.assertEqual(path.read_bytes(), original)
@@ -458,7 +445,7 @@ class WeekTests(unittest.TestCase):
         window.show()
         control = WeekControlWindow(self.service, self.key)
         control.show()
-        self.assertEqual(control.tabs.count(), 9)
+        self.assertEqual(control.tabs.count(), 8)
         c = self.points()
         preview = UploadDialog(self.service, self.key, [c.path])
         self.assertEqual(preview.candidates[0].kind, "puntos")
@@ -528,7 +515,7 @@ class WeekTests(unittest.TestCase):
         self.assertEqual(self.service.metrics(self.key)["company"]["sale"], 0)
         self.assertEqual((folder / "revision_preventa.json").read_text(), '{"legacy":true}')
 
-    def test_cannot_close_before_week_end_or_without_liquidations(self):
+    def test_cannot_close_before_week_end_or_after_source_change(self):
         self.ready_to_close()
         self.service.today = MON
         with self.assertRaises(ValueError):

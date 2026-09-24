@@ -20,14 +20,14 @@ def export_rewards(path, data):
     for sheet in (summary,detail):
         sheet.append([f"SHES · Comisiones y premios · {data['week_id']} · {state}"])
         sheet.append(["Comisión base: 3% antes de IVA. Premios adicionales acumulativos. Valores vacíos: no disponibles."])
-    summary.append(["Vendedor","Venta antes IVA","Comisión 3%"] + [f"{r['name']} [#{r['id']}]" for r in rules] +
+    summary.append(["Vendedor","Venta bruta","Devoluciones","Venta neta antes IVA","Comisión 3%"] + [f"{r['name']} [#{r['id']}]" for r in rules] +
                    ["Otros premios","Total premios","Total comisión + premios","Estado semana","Control final"])
     for seller in data["sellers"]:
         amounts = {r["rule"]["id"]:r["earned"] for r in seller["results"]}
-        summary.append([seller["seller"],seller["sale_net"],seller["base_commission"]] +
+        summary.append([seller["seller"],seller.get("sale_gross"),seller.get("returns",0),seller["sale_net"],seller["base_commission"]] +
                        [amounts.get(r["id"],0) for r in rules] + [0,seller["total_awards"],seller["total_variable"],
                        data["week_status"],"Confirmado" if seller["control_valid"] else "Pendiente"])
-    summary.append(["TOTAL",data["sale_net"],data["base_commission"]] +
+    summary.append(["TOTAL",sum((s.get("sale_gross") or 0) for s in data["sellers"]),sum(s.get("returns",0) for s in data["sellers"]),data["sale_net"],data["base_commission"]] +
                    [sum(r["earned"] for s in data["sellers"] for r in s["results"] if r["rule"]["id"]==rule["id"]) for rule in rules] +
                    [0,data["total_awards"],round(data["base_commission"]+data["total_awards"],2) if data["base_commission"] is not None else None,
                     data["week_status"],state])
