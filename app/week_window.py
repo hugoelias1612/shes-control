@@ -372,6 +372,8 @@ class WeekControlWindow(QMainWindow):
         providers_table.cellDoubleClicked.connect(lambda row, _: self.open_breakdown(
             "providers", providers_table.item(row, 0).text()))
         self.tabs.addTab(filterable(providers_table), "Proveedores")
+        from app.daily_sales import DailySalesPanel
+        self.tabs.addTab(DailySalesPanel(self.data, self), "Venta por día")
         self.tabs.addTab(self.returns_tab(), "Devoluciones")
         from app.reward_window import RewardsPanel
         self.tabs.addTab(RewardsPanel(self.service, self.key, self.data, self), "Premios")
