@@ -103,7 +103,7 @@ def reconcile(frame, session, week, saved=()):
         if match:
             match["remaining"] -= automatic
         excess = round(requested - automatic, 2)
-        outside = day > week["end_date"] and match is None
+        outside = (day < week["start_date"] or day > week["end_date"]) and match is None
         persisted = saved_by_fp.get(base["fingerprint"])
         decision = persisted["decision"] if persisted else (
             "AUTOMATICA" if match and not excess else "IGNORADA" if outside else "PENDIENTE")

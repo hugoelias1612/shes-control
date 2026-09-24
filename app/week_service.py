@@ -368,7 +368,10 @@ class WeekService:
         return data
 
     def decide_return(self, key, fingerprint, decision, note=""):
-        self.store.decide_return(key, fingerprint, decision, note)
+        self.decide_returns(key, [fingerprint], decision, note)
+
+    def decide_returns(self, key, fingerprints, decision, note=""):
+        self.store.decide_returns(key, fingerprints, decision, note)
         self._cache.clear()
         self._return_cache.clear()
 

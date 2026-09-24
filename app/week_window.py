@@ -462,8 +462,8 @@ class WeekControlWindow(QMainWindow):
     def returns_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("Los negativos con match descuentan automáticamente. Los negativos sin match de la semana requieren aprobar o rechazar. "
-                               "Un negativo posterior sin venta semanal compatible no afecta esta semana."))
+        layout.addWidget(QLabel("Los negativos con match descuentan automáticamente. Solo los negativos sin match dentro de la semana requieren decisión. "
+                               "Los anteriores o posteriores sin una venta semanal compatible se ignoran."))
         self.return_filter = QComboBox()
         self.return_filter.addItems(["Todas", "Con match", "Sin match", "Aprobadas", "Rechazadas", "Pendientes"])
         layout.addWidget(self.return_filter)
@@ -474,6 +474,7 @@ class WeekControlWindow(QMainWindow):
               r["quantity"], r["amount_net"], "Sí" if r["matched"] else "No", r["decision"], r["impact"], r["warning"]]
              for r in self.return_rows])
         self.return_table.setColumnHidden(0, True)
+        self.return_table.setSelectionMode(QTableWidget.ExtendedSelection)
         def apply_filter():
             selected = self.return_filter.currentText()
             by_fingerprint = {r["fingerprint"]: r for r in self.return_rows}
@@ -485,24 +486,37 @@ class WeekControlWindow(QMainWindow):
                 self.return_table.setRowHidden(row, not visible)
         self.return_filter.currentTextChanged.connect(apply_filter)
         layout.addWidget(self.return_table)
-        actions = QHBoxLayout()
-        for text, decision in [("APROBAR", "APROBADA"), ("RECHAZAR", "RECHAZADA")]:
+        actions = QGridLayout()
+        for index, (text, decision, all_pending) in enumerate([("APROBAR SELECCIONADAS", "APROBADA", False),
+                                            ("RECHAZAR SELECCIONADAS", "RECHAZADA", False),
+                                            ("APROBAR TODAS LAS PENDIENTES", "APROBADA", True),
+                                            ("RECHAZAR TODAS LAS PENDIENTES", "RECHAZADA", True)]):
             button = QPushButton(text)
             button.setEnabled(not self.closed)
-            button.clicked.connect(lambda _, value=decision: self.decide_return(value))
-            actions.addWidget(button)
+            button.clicked.connect(lambda _, value=decision, all_rows=all_pending: self.decide_returns(value, all_rows))
+            actions.addWidget(button, index // 2, index % 2)
         layout.addLayout(actions)
         return widget
 
-    def decide_return(self, decision):
-        row = self.return_table.currentRow()
-        record = next((r for r in self.return_rows if row >= 0 and r["fingerprint"] == self.return_table.item(row, 0).text()), None)
-        if record is None or record["decision"] not in {"PENDIENTE", "APROBADA", "RECHAZADA"}:
-            QMessageBox.information(self, "Devoluciones", "Seleccioná una devolución sin match que requiera decisión.")
+    def decide_returns(self, decision, all_pending=False):
+        by_fingerprint = {r["fingerprint"]: r for r in self.return_rows}
+        if all_pending:
+            records = [r for r in self.return_rows if r["decision"] == "PENDIENTE"]
+        else:
+            records = [by_fingerprint[self.return_table.item(index.row(), 0).text()]
+                       for index in self.return_table.selectionModel().selectedRows()
+                       if not self.return_table.isRowHidden(index.row())]
+            records = [r for r in records if r["decision"] == "PENDIENTE"]
+        if not records:
+            QMessageBox.information(self, "Devoluciones", "No hay devoluciones pendientes seleccionadas.")
+            return
+        verb = "aprobar" if decision == "APROBADA" else "rechazar"
+        if QMessageBox.question(self, "Devoluciones", f"¿{verb.capitalize()} {len(records)} devoluciones pendientes?",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         note, ok = QInputDialog.getText(self, "Devolución", "Nota opcional:")
         if ok:
-            self.guarded(lambda: self.service.decide_return(self.key, record["fingerprint"], decision, note))
+            self.guarded(lambda: self.service.decide_returns(self.key, [r["fingerprint"] for r in records], decision, note))
             self.refresh()
 
     def audit_tab(self):

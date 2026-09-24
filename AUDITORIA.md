@@ -11,7 +11,7 @@
   posteriores sin venta semanal compatible se ignoran para esa semana.
 - Bruto, devoluciones y neto alimentan compradores, conversión, ticket, artículos,
   proveedores, bultos, comisión y premios. Cobertura conserva la actividad SIGO.
-- Validación: 106 pruebas, incluidos rangos amplios 07–16, positivos posteriores,
+- Validación: 107 pruebas, incluidos rangos amplios 07–16, positivos posteriores,
   devoluciones posteriores parciales/totales, persistencia, cierres y regresiones.
 
 Se revisaron todos los módulos originales, main, dependencias y configuración Git.

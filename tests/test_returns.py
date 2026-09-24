@@ -118,6 +118,19 @@ class ReturnTests(unittest.TestCase):
         rejected = self.service.metrics(self.key)
         self.assertEqual((rejected["company"]["returns"], rejected["company"]["sale_net"]), (0, 0))
 
+    def test_preweek_unmatched_is_ignored_and_pending_rows_allow_bulk_decision(self):
+        data = self.load([self.order(1, MON)], [self.line(MON - timedelta(days=2), -10, code=97),
+            self.line(MON, -20, code=98), self.line(MON + timedelta(days=1), -30, code=99)])
+        old = next(r for r in data["returns"] if r["article"] == "97")
+        self.assertEqual((old["decision"], old["impact"]), ("IGNORADA", 0))
+        pending = [r for r in data["returns"] if r["decision"] == "PENDIENTE"]
+        self.assertEqual(len(pending), 2)
+        self.service.decide_returns(self.key, [r["fingerprint"] for r in pending], "RECHAZADA", "Fuera del control")
+        recalculated = self.service.metrics(self.key)
+        self.assertTrue(all(r["decision"] == "RECHAZADA" for r in recalculated["returns"] if r["article"] in {"98", "99"}))
+        audits = self.store.query("SELECT details FROM audit_events WHERE action='rechazar_devolucion'")
+        self.assertEqual(len(audits), 2)
+
     def test_return_larger_than_sale_applies_match_and_leaves_excess_pending(self):
         data = self.load([self.order(1, MON)], [self.line(MON, 20, quantity=1), self.line(MON + timedelta(days=1), -30, quantity=-1.5)])
         movement = data["returns"][0]

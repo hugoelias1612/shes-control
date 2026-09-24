@@ -308,7 +308,7 @@ class WeekStore:
                 db.execute("""INSERT INTO return_adjustments(week_id,fingerprint,payload,decision,created_at,updated_at)
                     VALUES(?,?,?,?,?,?) ON CONFLICT(week_id,fingerprint) DO UPDATE SET
                     payload=excluded.payload,
-                    decision=CASE WHEN excluded.decision='AUTOMATICA' THEN 'AUTOMATICA'
+                    decision=CASE WHEN excluded.decision IN ('AUTOMATICA','IGNORADA') THEN excluded.decision
                                   WHEN return_adjustments.decision IN ('APROBADA','RECHAZADA')
                                   THEN return_adjustments.decision ELSE excluded.decision END,
                     updated_at=excluded.updated_at""",
@@ -324,20 +324,31 @@ class WeekStore:
         return self.query("SELECT * FROM return_adjustments WHERE week_id=? ORDER BY created_at,fingerprint", (key,))
 
     def decide_return(self, key, fingerprint, decision, note=""):
+        return self.decide_returns(key, [fingerprint], decision, note)
+
+    def decide_returns(self, key, fingerprints, decision, note=""):
         if decision not in {"APROBADA", "RECHAZADA"}:
             raise ValueError("Decisión de devolución inválida")
+        fingerprints = list(dict.fromkeys(fingerprints))
+        if not fingerprints:
+            raise ValueError("Seleccioná al menos una devolución pendiente")
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.assert_open(db, key)
-            row = db.execute("SELECT * FROM return_adjustments WHERE week_id=? AND fingerprint=?",
-                             (key, fingerprint)).fetchone()
-            if row is None or row["decision"] in {"AUTOMATICA", "IGNORADA"}:
-                raise ValueError("La devolución no requiere decisión manual")
+            rows = []
+            for fingerprint in fingerprints:
+                row = db.execute("SELECT * FROM return_adjustments WHERE week_id=? AND fingerprint=?",
+                                 (key, fingerprint)).fetchone()
+                if row is None or row["decision"] in {"AUTOMATICA", "IGNORADA"}:
+                    raise ValueError("Una devolución seleccionada no requiere decisión manual")
+                rows.append(row)
             now = timestamp()
-            db.execute("UPDATE return_adjustments SET decision=?,note=?,decided_at=?,updated_at=? WHERE week_id=? AND fingerprint=?",
-                       (decision, note.strip(), now, now, key, fingerprint))
-            self.audit(db, key, "aprobar_devolucion" if decision == "APROBADA" else "rechazar_devolucion",
-                       {"fingerprint": fingerprint, "note": note, "previous": row["decision"]})
+            for row in rows:
+                db.execute("UPDATE return_adjustments SET decision=?,note=?,decided_at=?,updated_at=? WHERE week_id=? AND fingerprint=?",
+                           (decision, note.strip(), now, now, key, row["fingerprint"]))
+                self.audit(db, key, "aprobar_devolucion" if decision == "APROBADA" else "rechazar_devolucion",
+                           {"fingerprint": row["fingerprint"], "note": note, "previous": row["decision"],
+                            "accion_masiva": len(rows) > 1})
 
     def save_snapshot(self, key, data, kind="procesado", close=False):
         with self.connect() as db:

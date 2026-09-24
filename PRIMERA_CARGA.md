@@ -32,6 +32,9 @@ Pedidos determina ventas y vendedores. PorCliente aporta artículos por cliente 
 venta positiva semanal anterior compatible, descuentan automáticamente. Los casos sin
 match de la semana requieren aprobar o rechazar; una decisión se reconoce por huella
 estable al reemplazar PorCliente.
+Los negativos sin match anteriores o posteriores a la semana quedan ignorados. Para
+los pendientes se pueden seleccionar varias filas con Ctrl/Shift o usar los botones
+**APROBAR/RECHAZAR TODAS LAS PENDIENTES**.
 
 Los resultados son de preventa, no venta neta después de devoluciones. SIGO vendido significa cliente con Hora Venta; no crea importes. Las alertas se abren cuando necesitás consultar el detalle.
 

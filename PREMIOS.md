@@ -41,8 +41,8 @@ Los porcentajes se ingresan como 55 para 55%. No se juzga el objetivo elegido.
 Si falta una fuente o el importe neto, la métrica queda no disponible; no se
 convierte una ausencia de datos en un cero que pueda ganar un premio.
 Las líneas negativas con match descuentan automáticamente. Las que no tienen match
-dentro de la semana se aprueban o rechazan en Devoluciones; las posteriores sin una
-venta semanal compatible se ignoran para esa semana.
+dentro de la semana se aprueban o rechazan en Devoluciones, individualmente o en lote;
+las anteriores o posteriores sin una venta semanal compatible se ignoran.
 
 ## Seguimiento y control
 

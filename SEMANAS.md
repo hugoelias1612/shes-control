@@ -19,7 +19,7 @@ Las semanas cerradas requieren reapertura antes de eliminar cargas.
 La migración automática a esquema 2 agrega `uploads.removed_at` sin modificar
 archivos ni eliminar registros existentes. La eliminación múltiple es atómica y
 verifica que la semana no haya cambiado desde que se abrió la lista.
-Validación actual: 106 tests, incluyendo migración, recarga del mismo Excel,
+Validación actual: 107 tests, incluyendo migración, recarga del mismo Excel,
 cancelación, selección ordenada en UI, recálculo y bloqueo en semanas cerradas.
 
 ## Arquitectura y compatibilidad
@@ -179,8 +179,9 @@ avance documental continuo desde el lunes. Una semana incompleta permite analiza
 PorCliente se cruza por cliente y fecha de entrega, con el vendedor final del pedido.
 Los positivos solo entran al hallar pedidos de esta semana. Los negativos buscan por
 cliente, artículo y vendedor la venta positiva anterior más cercana; una devolución
-posterior compatible puede descontarla. Los negativos posteriores sin match no afectan
-la semana. Los casos sin match dentro de la semana se aprueban o rechazan manualmente.
+posterior compatible puede descontarla. Los negativos anteriores o posteriores sin match
+no afectan la semana. Los casos sin match dentro de la semana se aprueban o rechazan
+individualmente, mediante selección múltiple o todos juntos.
 Sus fuentes crudas quedan conservadas. No se prorratean importes para forzar coincidencias.
 Los pedidos sin vendedor se muestran como SIN ASIGNAR: requieren asignación en la revisión
 y una alerta informa el importe que aún no suma. Las revisiones anteriores basadas en alta
@@ -252,8 +253,8 @@ como una nueva revisión semanal.
 
 ## Validación y pendientes
 
-La suite contempla 106 pruebas: 22 diarias, 57 semanales, 19 de premios e interfaz
-y 8 escenarios concentrados de devoluciones. Incluye los
+La suite contempla 107 pruebas: 22 diarias, 57 semanales, 19 de premios e interfaz
+y 9 escenarios concentrados de devoluciones. Incluye los
 30 casos solicitados y regresiones adicionales de rangos,
 reapertura, persistencia al reiniciar, manipulación de archivos, reasignación y UI.
 Se ejecutó además una carga semanal con copias temporales de los cuatro Excel
