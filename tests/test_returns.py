@@ -1,5 +1,6 @@
 """Devoluciones semanales derivadas de PorCliente."""
 from datetime import date, timedelta
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -74,6 +75,18 @@ class ReturnTests(unittest.TestCase):
         ignored = next(r for r in data["returns"] if r["article"] == "30")
         self.assertEqual(ignored["decision"], "IGNORADA")
         self.assertEqual(ignored["impact"], 0)
+
+    def test_weekly_summary_separates_gross_returns_net_and_orders_with_tax(self):
+        data = self.load([self.order(1, MON, total=121)], [self.line(MON, 100), self.line(MON, -20)])
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        from PySide6.QtWidgets import QApplication, QLabel
+        from app.dashboard_window import DashboardWindow
+        app = QApplication.instance() or QApplication([])
+        dashboard = DashboardWindow(data)
+        labels = {label.text() for label in dashboard.findChildren(QLabel)}
+        self.assertTrue({"Venta bruta antes de IVA", "Devoluciones", "Venta neta antes de IVA",
+                         "Pedidos con IVA (referencia)"} <= labels)
+        dashboard.close(); app.processEvents()
 
     def test_partial_and_total_return_recalculate_buyers_conversion_but_not_coverage(self):
         day = MON + timedelta(days=2)

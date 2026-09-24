@@ -848,16 +848,29 @@ class DashboardWindow(QMainWindow):
 
         row1 = QHBoxLayout()
 
-        row1.addWidget(
-            MetricCard(
-                "Venta",
-                money(
-                    company[
-                        "sale"
-                    ]
-                ),
+        if self.data.get("week_id") and company.get("sale_net") is not None:
+            # En la vista semanal, Pedidos.total incluye IVA y se conserva sólo
+            # como referencia. Comisión y premios usan el neto de PorCliente.
+            for label, key in [
+                ("Venta bruta antes de IVA", "sale_gross"),
+                ("Devoluciones", "returns"),
+                ("Venta neta antes de IVA", "sale_net"),
+                ("Pedidos con IVA (referencia)", "sale"),
+            ]:
+                row1.addWidget(MetricCard(label, money(company.get(key) or 0)))
+            layout.addLayout(row1)
+            row1 = QHBoxLayout()
+        else:
+            row1.addWidget(
+                MetricCard(
+                    "Venta",
+                    money(
+                        company[
+                            "sale"
+                        ]
+                    ),
+                )
             )
-        )
 
         row1.addWidget(
             MetricCard(
