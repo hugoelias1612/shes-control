@@ -12,6 +12,22 @@ from app.review_data import (ArticleLine, LogicalOrder, clean_text, normalize_se
                              normalize_text, safe_float)
 
 
+def return_summary(rows, included_sellers):
+    """Amounts received versus effective company deductions; groups may overlap."""
+    groups = [("Total", lambda r: True),
+              ("Con match", lambda r: r["matched"]),
+              ("Sin match", lambda r: not r["matched"])]
+    groups += [(label, lambda r, state=state: r["decision"] == state)
+               for label, state in [("Automáticas", "AUTOMATICA"), ("Aprobadas", "APROBADA"),
+                                    ("Rechazadas", "RECHAZADA"), ("Pendientes", "PENDIENTE"),
+                                    ("Ignoradas", "IGNORADA")]]
+    return [dict(label=label, count=len(selected),
+                 amount=round(sum(abs(r["amount_net"]) for r in selected), 2),
+                 applied=round(sum(max(0, -r["impact"]) for r in selected
+                                   if r["assigned_seller"] in included_sellers), 2))
+            for label, predicate in groups for selected in [[r for r in rows if predicate(r)]]]
+
+
 def code(value):
     return clean_text(value).removesuffix(".0")
 

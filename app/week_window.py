@@ -467,8 +467,31 @@ class WeekControlWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.addWidget(QLabel("Los negativos con match descuentan automáticamente. Solo los negativos sin match dentro de la semana requieren decisión. "
                                "Los anteriores o posteriores sin una venta semanal compatible se ignoran."))
+        from app.returns import return_summary
+        from app.daily_sales import currency
+        rows = self.data.get("returns", [])
+        breakdown = return_summary(rows, {s["seller"] for s in self.data["sellers"]})
+        totals = breakdown[0]
+        headline = QLabel(f"TOTAL DEVOLUCIONES NETO: {currency(totals['amount'])} · {totals['count']} líneas\n"
+                          f"DESCONTADO DE LA SEMANA: {currency(totals['applied'])}")
+        headline.setStyleSheet("font-size: 17px; font-weight: bold; color: #b51c25;")
+        headline.setWordWrap(True)
+        layout.addWidget(headline)
+        explanation = QLabel("Importes antes de IVA. Total recibido incluye todos los negativos del archivo, incluso ignorados y vendedores excluidos. "
+            "Descontado incluye solo el impacto de vendedores incluidos. Con/sin match y estados son dos desgloses del mismo total: no sumarlos entre sí. "
+            "Una rechazada puede conservar una parte conciliada; solo se rechaza su excedente. Los totales no cambian con el filtro.")
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        summary = table(["Grupo / estado", "Cantidad de líneas", "Importe neto recibido", "Neto descontado de la semana"],
+            [[r["label"], r["count"], r["amount"], r["applied"]] for r in breakdown[1:]])
+        summary.setSortingEnabled(False)
+        for index, value in enumerate(breakdown[1:]):
+            for column, field in [(2, "amount"), (3, "applied")]:
+                summary.setItem(index, column, NumericItem(value[field], currency(value[field])))
+        summary.setMaximumHeight(230)
+        layout.addWidget(summary)
         self.return_filter = QComboBox()
-        self.return_filter.addItems(["Todas", "Con match", "Sin match", "Aprobadas", "Rechazadas", "Pendientes"])
+        self.return_filter.addItems(["Todas", "Con match", "Sin match", "Aprobadas", "Rechazadas", "Pendientes", "Automáticas", "Ignoradas"])
         layout.addWidget(self.return_filter)
         self.return_rows = self.data.get("returns", [])
         self.return_table = table(["Huella", "Fecha", "Cliente", "Vendedor origen", "Vendedor final", "Artículo", "Proveedor",
@@ -485,7 +508,8 @@ class WeekControlWindow(QMainWindow):
                 value = by_fingerprint[self.return_table.item(row, 0).text()]
                 visible = (selected == "Todas" or selected == "Con match" and value["matched"] or
                     selected == "Sin match" and not value["matched"] or selected == "Aprobadas" and value["decision"] == "APROBADA" or
-                    selected == "Rechazadas" and value["decision"] == "RECHAZADA" or selected == "Pendientes" and value["decision"] == "PENDIENTE")
+                    selected == "Rechazadas" and value["decision"] == "RECHAZADA" or selected == "Pendientes" and value["decision"] == "PENDIENTE" or
+                    selected == "Automáticas" and value["decision"] == "AUTOMATICA" or selected == "Ignoradas" and value["decision"] == "IGNORADA")
                 self.return_table.setRowHidden(row, not visible)
         self.return_filter.currentTextChanged.connect(apply_filter)
         layout.addWidget(self.return_table)

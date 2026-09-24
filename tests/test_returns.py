@@ -76,6 +76,17 @@ class ReturnTests(unittest.TestCase):
         self.assertEqual(ignored["decision"], "IGNORADA")
         self.assertEqual(ignored["impact"], 0)
 
+    def test_summary_distinguishes_received_partial_and_excluded_impacts(self):
+        from app.returns import return_summary
+        rows = [dict(matched=True, decision="RECHAZADA", amount_net=-100, impact=-40, assigned_seller="A"),
+                dict(matched=True, decision="AUTOMATICA", amount_net=-20, impact=-20, assigned_seller="EXCLUDED"),
+                dict(matched=False, decision="IGNORADA", amount_net=-30, impact=0, assigned_seller="")]
+        summary = {r["label"]: r for r in return_summary(rows, {"A"})}
+        self.assertEqual((summary["Total"]["count"], summary["Total"]["amount"], summary["Total"]["applied"]), (3, 150, 40))
+        self.assertEqual(summary["Rechazadas"]["applied"], 40)
+        self.assertEqual(summary["Automáticas"]["applied"], 0)
+        self.assertEqual(summary["Sin match"]["amount"], 30)
+
     def test_weekly_summary_separates_gross_returns_net_and_orders_with_tax(self):
         data = self.load([self.order(1, MON, total=121)], [self.line(MON, 100), self.line(MON, -20)])
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
