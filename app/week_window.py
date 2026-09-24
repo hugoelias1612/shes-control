@@ -29,7 +29,7 @@ def date_edit(value):
     return widget
 
 
-def table(headers, rows):
+def table(headers, rows, sortable=True):
     widget = QTableWidget(len(rows), len(headers))
     widget.setHorizontalHeaderLabels(headers)
     widget.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -38,10 +38,10 @@ def table(headers, rows):
         for col, value in enumerate(values):
             item = NumericItem(value) if isinstance(value, (int, float)) else QTableWidgetItem(str(value))
             widget.setItem(row, col, item)
-    configure_table(widget)
+    configure_table(widget, sortable=sortable)
     widget.setAlternatingRowColors(True)
     widget.verticalHeader().setVisible(False)
-    widget.setSortingEnabled(True)
+    widget.setSortingEnabled(sortable)
     return widget
 
 
@@ -467,29 +467,9 @@ class WeekControlWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.addWidget(QLabel("Los negativos con match descuentan automáticamente. Solo los negativos sin match dentro de la semana requieren decisión. "
                                "Los anteriores o posteriores sin una venta semanal compatible se ignoran."))
-        from app.returns import return_summary
-        from app.daily_sales import currency
-        rows = self.data.get("returns", [])
-        breakdown = return_summary(rows, {s["seller"] for s in self.data["sellers"]})
-        totals = breakdown[0]
-        headline = QLabel(f"TOTAL DEVOLUCIONES NETO: {currency(totals['amount'])} · {totals['count']} líneas\n"
-                          f"DESCONTADO DE LA SEMANA: {currency(totals['applied'])}")
-        headline.setStyleSheet("font-size: 17px; font-weight: bold; color: #b51c25;")
-        headline.setWordWrap(True)
-        layout.addWidget(headline)
-        explanation = QLabel("Importes antes de IVA. Total recibido incluye todos los negativos del archivo, incluso ignorados y vendedores excluidos. "
-            "Descontado incluye solo el impacto de vendedores incluidos. Con/sin match y estados son dos desgloses del mismo total: no sumarlos entre sí. "
-            "Una rechazada puede conservar una parte conciliada; solo se rechaza su excedente. Los totales no cambian con el filtro.")
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
-        summary = table(["Grupo / estado", "Cantidad de líneas", "Importe neto recibido", "Neto descontado de la semana"],
-            [[r["label"], r["count"], r["amount"], r["applied"]] for r in breakdown[1:]])
-        summary.setSortingEnabled(False)
-        for index, value in enumerate(breakdown[1:]):
-            for column, field in [(2, "amount"), (3, "applied")]:
-                summary.setItem(index, column, NumericItem(value[field], currency(value[field])))
-        summary.setMaximumHeight(230)
-        layout.addWidget(summary)
+        details = QPushButton("Abrir detalle de devoluciones")
+        details.clicked.connect(self.open_returns_detail)
+        layout.addWidget(details, alignment=Qt.AlignLeft)
         self.return_filter = QComboBox()
         self.return_filter.addItems(["Todas", "Con match", "Sin match", "Aprobadas", "Rechazadas", "Pendientes", "Automáticas", "Ignoradas"])
         layout.addWidget(self.return_filter)
@@ -524,6 +504,49 @@ class WeekControlWindow(QMainWindow):
             actions.addWidget(button, index // 2, index % 2)
         layout.addLayout(actions)
         return widget
+
+    def open_returns_detail(self):
+        from app.returns import return_order_stats
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Detalle de devoluciones")
+        dialog.resize(1000, 650)
+        layout = QVBoxLayout(dialog)
+        stats = return_order_stats(self.data)
+        overview = QLabel(
+            f"{stats['lines']} líneas de devolución conciliadas · {stats['affected']} pedidos lógicos afectados de {stats['orders']} "
+            f"({stats['percent']:.1f}%)\n"
+            f"Rechazo total: {stats['total']} pedidos · Parcial: {stats['partial']} · Sin base neta para clasificar: {stats['unknown']}")
+        overview.setWordWrap(True)
+        layout.addWidget(overview)
+        note = QLabel("Porcentaje = pedidos únicos con devolución conciliada / pedidos lógicos válidos de vendedores incluidos. "
+            "Total: importe conciliado devuelto alcanza la venta del pedido antes de IVA (tolerancia $0,01); parcial: devuelve menos. "
+            "Es una clasificación por importe, no el estado logístico de CHESS. Aprobaciones sin pedido identificado no se clasifican.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        from app.returns import return_summary
+        from app.daily_sales import currency
+        rows = self.data.get("returns", [])
+        breakdown = return_summary(rows, {s["seller"] for s in self.data["sellers"]})
+        totals = breakdown[0]
+        headline = QLabel(f"TOTAL DEVOLUCIONES NETO: {currency(totals['amount'])} · {totals['count']} líneas\n"
+                          f"DESCONTADO DE LA SEMANA: {currency(totals['applied'])}")
+        headline.setStyleSheet("font-size: 17px; font-weight: bold; color: #b51c25;")
+        headline.setWordWrap(True)
+        layout.addWidget(headline)
+        explanation = QLabel("Importes antes de IVA. Total recibido incluye todos los negativos del archivo, incluso ignorados y vendedores excluidos. "
+            "Descontado incluye solo el impacto de vendedores incluidos. Con/sin match y estados son dos desgloses del mismo total: no sumarlos entre sí. "
+            "Una rechazada puede conservar una parte conciliada; solo se rechaza su excedente. Los totales no cambian con el filtro.")
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        summary = table(["Grupo / estado", "Cantidad de líneas", "Importe neto recibido", "Neto descontado de la semana"],
+            [[r["label"], r["count"], r["amount"], r["applied"]] for r in breakdown[1:]], sortable=False)
+        summary.setSortingEnabled(False)
+        for index, value in enumerate(breakdown[1:]):
+            for column, field in [(2, "amount"), (3, "applied")]:
+                summary.setItem(index, column, NumericItem(value[field], currency(value[field])))
+        layout.addWidget(summary)
+        summary.setSortingEnabled(True)
+        dialog.exec()
 
     def decide_returns(self, decision, all_pending=False):
         by_fingerprint = {r["fingerprint"]: r for r in self.return_rows}

@@ -12,6 +12,32 @@ from app.review_data import (ArticleLine, LogicalOrder, clean_text, normalize_se
                              normalize_text, safe_float)
 
 
+def return_order_stats(data):
+    included = {s["seller"] for s in data["sellers"]}
+    orders, references = {}, {}
+    for order in data.get("review", {}).get("orders", []):
+        if order["fully_annulled"] or order["assigned_seller"] not in included:
+            continue
+        key = (order["client_code"], order["assigned_seller"], order["preventa_day"])
+        item = orders.setdefault(key, dict(net=0., returned=0.))
+        net = order.get("net_total")
+        item["net"] = None if net is None or item["net"] is None else item["net"] + net
+        references[order["logical_id"]] = key
+    lines = 0
+    for movement in data.get("returns", []):
+        key = references.get(movement.get("matched_sale_ref"))
+        amount = min(movement.get("automatic_amount", 0), max(0, -movement.get("impact", 0)))
+        if key is not None and movement.get("matched") and amount > 0:
+            orders[key]["returned"] += amount
+            lines += 1
+    affected = [o for o in orders.values() if o["returned"] > 0]
+    unknown = sum(o["net"] is None or o["net"] <= 0 for o in affected)
+    total = sum(o["net"] is not None and o["net"] > 0 and o["returned"] >= o["net"] - .01 for o in affected)
+    return dict(orders=len(orders), affected=len(affected), lines=lines, total=total,
+                partial=len(affected)-unknown-total, unknown=unknown,
+                percent=100*len(affected)/len(orders) if orders else 0)
+
+
 def return_summary(rows, included_sellers):
     """Amounts received versus effective company deductions; groups may overlap."""
     groups = [("Total", lambda r: True),
